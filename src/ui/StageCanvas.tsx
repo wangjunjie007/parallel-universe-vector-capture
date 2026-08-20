@@ -240,6 +240,7 @@ export function StageCanvas({
       <div className={`stage-viewport ${hasSource ? 'has-source' : 'is-empty'} phase-${phase}`} style={{ aspectRatio }}>
         <video
           className={`stage-video ${mirror ? 'is-mirrored' : ''}`}
+          style={{ transform: mirror ? 'scaleX(-1)' : 'none' }}
           ref={videoRef}
           muted
           autoPlay={!replay?.ready}
