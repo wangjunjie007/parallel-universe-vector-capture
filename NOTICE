@@ -1,7 +1,19 @@
 Parallel Universe Vector Capture application code is licensed under the MIT License (see LICENSE).
 
-This distribution bundles MediaPipe Tasks Vision 0.10.35 runtime files under Apache License 2.0.
-The hand landmarker model is distributed by the MediaPipe project under the terms accompanying the
-model and its task bundle. Review upstream notices before redistributing a modified bundle.
+This distribution bundles the `@mediapipe/tasks-vision` 0.10.35 runtime and its WASM files under
+the Apache License 2.0. The upstream license text is available at:
+https://www.apache.org/licenses/LICENSE-2.0
 
-MediaPipe: https://github.com/google-ai-edge/mediapipe
+The bundled `hand_landmarker.task` is the official MediaPipe Hand Landmarker float16/1 model
+bundle, downloaded from the public MediaPipe model endpoint and verified by SHA-256 during every
+build. The upstream task page and model card are the authoritative references for the model:
+
+- https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker
+- https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Hand%20Tracking%20(Lite_Full)%20with%20Fairness%20Oct%202021.pdf
+- https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+
+The model card identifies its documentation as Apache 2.0, but does not state a separate license
+for the binary model bundle. This project therefore makes no broader license claim for that file;
+review the current upstream terms before commercial redistribution or a modified model bundle.
+
+MediaPipe source: https://github.com/google-ai-edge/mediapipe
