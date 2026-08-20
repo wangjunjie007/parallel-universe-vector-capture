@@ -179,23 +179,26 @@ const drawRegionEffects = (ctx: CanvasRenderingContext2D, corners: OverlayPositi
   // The visual language follows the open-source LiquidGlass shader approach: transparent
   // refraction-like passes, animated color matrices and chromatic separation, rather than
   // opaque stripes or a single static filter.
-  paintField(0, 0.42);
+  // Keep the aggregate veil light even when several filters are selected together.
+  const veil = Math.min(1, 1 / Math.max(1, effects.length * 0.72));
+  const translucent = (alpha: number) => alpha * veil;
+  paintField(0, translucent(0.18));
   const colorPass = (filter: string, alpha: number, mode: GlobalCompositeOperation = 'screen') => {
     ctx.save(); ctx.globalCompositeOperation = mode; ctx.globalAlpha = alpha; ctx.filter = filter;
     const gradient = ctx.createLinearGradient(left + Math.sin(phase * 1.7) * width, top + height, left + width, top - Math.cos(phase * 1.2) * height);
     gradient.addColorStop(0, palette[0]); gradient.addColorStop(0.28, palette[1]); gradient.addColorStop(0.58, palette[2]); gradient.addColorStop(1, '#f8fbff');
     ctx.fillStyle = gradient; ctx.fillRect(left - width * 0.15, top - height * 0.15, width * 1.3, height * 1.3); ctx.restore();
   };
-  if (effects.includes('aurora')) { colorPass(`hue-rotate(${Math.sin(phase) * 80}deg) saturate(2.3) contrast(1.35)`, 0.34); colorPass(`blur(${Math.max(2, width * 0.025)}px) hue-rotate(${phase * 38}deg) saturate(2.8)`, 0.2, 'overlay'); }
-  if (effects.includes('prismatic')) { colorPass(`hue-rotate(${phase * 72}deg) saturate(3.8) contrast(1.5)`, 0.32, 'screen'); colorPass(`blur(${Math.max(1, width * 0.012)}px) hue-rotate(${180 + phase * 44}deg)`, 0.22, 'difference'); }
-  if (effects.includes('energyBloom')) { colorPass(`blur(${Math.max(3, width * 0.06)}px) saturate(4) brightness(1.35) hue-rotate(${phase * 55}deg)`, 0.28, 'screen'); colorPass(`contrast(2.2) saturate(3.2) hue-rotate(${phase * -90}deg)`, 0.18, 'lighter'); }
-  if (effects.includes('liquidChromatic')) { colorPass(`blur(${Math.max(1, width * 0.018)}px) hue-rotate(${phase * 120}deg) saturate(4)`, 0.3, 'overlay'); colorPass(`hue-rotate(${180 - phase * 90}deg) saturate(3.5) contrast(1.6)`, 0.22, 'screen'); }
+  if (effects.includes('aurora')) { colorPass(`hue-rotate(${Math.sin(phase) * 80}deg) saturate(2.3) contrast(1.35)`, translucent(0.16)); colorPass(`blur(${Math.max(2, width * 0.025)}px) hue-rotate(${phase * 38}deg) saturate(2.8)`, translucent(0.08), 'overlay'); }
+  if (effects.includes('prismatic')) { colorPass(`hue-rotate(${phase * 72}deg) saturate(3.8) contrast(1.5)`, translucent(0.14), 'screen'); colorPass(`blur(${Math.max(1, width * 0.012)}px) hue-rotate(${180 + phase * 44}deg)`, translucent(0.08), 'difference'); }
+  if (effects.includes('energyBloom')) { colorPass(`blur(${Math.max(3, width * 0.06)}px) saturate(4) brightness(1.35) hue-rotate(${phase * 55}deg)`, translucent(0.13), 'screen'); colorPass(`contrast(2.2) saturate(3.2) hue-rotate(${phase * -90}deg)`, translucent(0.08), 'lighter'); }
+  if (effects.includes('liquidChromatic')) { colorPass(`blur(${Math.max(1, width * 0.018)}px) hue-rotate(${phase * 120}deg) saturate(4)`, translucent(0.14), 'overlay'); colorPass(`hue-rotate(${180 - phase * 90}deg) saturate(3.5) contrast(1.6)`, translucent(0.08), 'screen'); }
   if (effects.includes('kaleido')) {
-    ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = 0.24; ctx.filter = `saturate(2.8) contrast(1.45) hue-rotate(${phase * 50}deg)`; ctx.translate(cx, cy); ctx.rotate(Math.sin(phase) * 0.18);
+    ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = translucent(0.1); ctx.filter = `saturate(2.8) contrast(1.45) hue-rotate(${phase * 50}deg)`; ctx.translate(cx, cy); ctx.rotate(Math.sin(phase) * 0.18);
     for (let i = 0; i < 6; i += 1) { ctx.rotate(Math.PI / 3); ctx.fillStyle = palette[i % 3]; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(width * 0.7, height * 0.12); ctx.lineTo(width * 0.18, height * 0.62); ctx.closePath(); ctx.fill(); }
     ctx.restore();
   }
-  if (effects.includes('invertCascade')) { colorPass(`invert(1) hue-rotate(${phase * 110}deg) saturate(2.5) contrast(1.7)`, 0.28, 'difference'); colorPass(`invert(1) blur(${Math.max(1, width * 0.01)}px) hue-rotate(${180 - phase * 65}deg)`, 0.18, 'exclusion'); }
+  if (effects.includes('invertCascade')) { colorPass(`invert(1) hue-rotate(${phase * 110}deg) saturate(2.5) contrast(1.7)`, translucent(0.13), 'difference'); colorPass(`invert(1) blur(${Math.max(1, width * 0.01)}px) hue-rotate(${180 - phase * 65}deg)`, translucent(0.08), 'exclusion'); }
   ctx.restore();
 };
 
