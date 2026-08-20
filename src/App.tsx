@@ -1353,7 +1353,7 @@ export default function App({ controller: externalController, initialLanguage }:
   const videoRef = controller.videoRef ?? localController.videoRef;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(true);
-  const [visualConfig, setVisualConfig] = useState<OverlayVisualConfig>({ connections: ['portal'], effects: ['prism'] });
+  const [visualConfig, setVisualConfig] = useState<OverlayVisualConfig>({ connections: ['portal'], effects: ['aurora'] });
   const lang = snapshot.language;
   const isProcessing = snapshot.phase === 'processing';
   const isLive = snapshot.mode === 'live';

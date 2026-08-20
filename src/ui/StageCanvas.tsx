@@ -7,7 +7,7 @@ import { t } from './i18n';
 import { buildEffectRegions, FINGER_ORDER, type OverlayPosition } from './overlayGeometry';
 
 export type ConnectionStyle = 'portal' | 'fingers' | 'bridges' | 'mesh' | 'fine';
-export type RegionEffect = 'prism' | 'scanlines' | 'neon' | 'invert' | 'energy' | 'grid' | 'particles' | 'chromatic' | 'warp' | 'ripple';
+export type RegionEffect = 'aurora' | 'prismatic' | 'invertCascade' | 'kaleido' | 'liquidChromatic' | 'energyBloom';
 export interface OverlayVisualConfig { connections: ConnectionStyle[]; effects: RegionEffect[] }
 
 interface StageCanvasProps {
@@ -159,94 +159,35 @@ const polygonPath = (ctx: CanvasRenderingContext2D, corners: OverlayPosition[]) 
 const drawRegionEffects = (ctx: CanvasRenderingContext2D, corners: OverlayPosition[], effects: RegionEffect[], regionIndex: number, frame: number) => {
   if (corners.length !== 4 || effects.length === 0) return;
   const palette = regionPalettes[regionIndex % regionPalettes.length];
-  const xs = corners.map((point) => point.x);
-  const ys = corners.map((point) => point.y);
-  const left = Math.min(...xs);
-  const top = Math.min(...ys);
-  const width = Math.max(...xs) - left;
-  const height = Math.max(...ys) - top;
-  const centerX = left + width / 2;
-  const centerY = top + height / 2;
+  const xs = corners.map((point) => point.x); const ys = corners.map((point) => point.y);
+  const left = Math.min(...xs); const top = Math.min(...ys); const width = Math.max(...xs) - left; const height = Math.max(...ys) - top;
+  const cx = left + width / 2; const cy = top + height / 2; const phase = frame * 0.018 + regionIndex * 1.7;
+  ctx.save(); polygonPath(ctx, corners); ctx.clip();
 
-  ctx.save();
-  polygonPath(ctx, corners);
-  ctx.clip();
-  if (effects.includes('prism')) {
-    const gradient = ctx.createLinearGradient(left, top, left + width, top + height);
-    gradient.addColorStop(0, `${palette[0]}38`);
-    gradient.addColorStop(0.5, `${palette[1]}24`);
-    gradient.addColorStop(1, `${palette[2]}38`);
-    ctx.fillStyle = gradient;
-    ctx.fillRect(left, top, width, height);
-  }
-  if (effects.includes('neon')) {
-    const glow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, Math.max(width, height) * 0.78);
-    glow.addColorStop(0, `${palette[0]}62`);
-    glow.addColorStop(0.42, `${palette[1]}32`);
-    glow.addColorStop(1, `${palette[2]}05`);
-    ctx.fillStyle = glow;
-    ctx.fillRect(left, top, width, height);
-    ctx.globalAlpha = 0.34;
-    ctx.fillStyle = palette[0];
-    ctx.fillRect(left, top, width, Math.max(2, height * 0.025));
-  }
-  if (effects.includes('scanlines')) { ctx.strokeStyle = 'rgba(145,231,194,.28)'; ctx.lineWidth = 1; for (let y = top; y < top + height; y += 6) { ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke(); } }
-  if (effects.includes('invert')) { ctx.globalCompositeOperation = 'difference'; ctx.fillStyle = 'rgba(255,255,255,.16)'; ctx.fillRect(left, top, width, height); }
-  if (effects.includes('energy')) {
-    const glow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, Math.max(width, height) * 0.7);
-    glow.addColorStop(0, `${palette[0]}50`);
-    glow.addColorStop(0.55, `${palette[1]}20`);
-    glow.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(left, top, width, height);
-  }
-  if (effects.includes('grid')) {
-    ctx.strokeStyle = `${palette[1]}42`;
-    ctx.lineWidth = 0.75;
-    for (let x = left; x <= left + width; x += 12) { ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + height); ctx.stroke(); }
-    for (let y = top; y <= top + height; y += 12) { ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke(); }
-  }
-  if (effects.includes('particles')) {
-    ctx.fillStyle = `${palette[2]}b8`;
-    for (let index = 0; index < 18; index += 1) {
-      const x = left + ((((index * 37) + (regionIndex * 19) + frame) % 101) / 100) * width;
-      const y = top + ((((index * 61) + (regionIndex * 11) + Math.floor(frame / 2)) % 97) / 96) * height;
-      ctx.beginPath(); ctx.arc(x, y, index % 3 === 0 ? 1.6 : 0.9, 0, Math.PI * 2); ctx.fill();
-    }
-  }
-  if (effects.includes('warp')) {
-    ctx.strokeStyle = `${palette[1]}55`;
-    ctx.lineWidth = 1;
-    for (let index = -2; index < 7; index += 1) {
-      const y = top + (index / 5) * height;
-      ctx.beginPath();
-      ctx.moveTo(left, y);
-      ctx.quadraticCurveTo(centerX, y + Math.sin(frame * 0.08 + index + regionIndex) * height * 0.16, left + width, y);
-      ctx.stroke();
-    }
-  }
-  if (effects.includes('ripple')) {
-    const phase = (frame * 0.045 + regionIndex * 0.23) % 1;
-    ctx.strokeStyle = `${palette[2]}8a`;
-    ctx.lineWidth = 1.4;
-    for (let ring = 0; ring < 3; ring += 1) {
-      const radius = Math.max(width, height) * ((phase + ring / 3) % 1) * 0.62;
-      ctx.globalAlpha = 0.72 - ring * 0.18;
-      ctx.beginPath();
-      ctx.ellipse(centerX, centerY, radius, radius * 0.62, 0, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
-  ctx.restore();
-
-  if (effects.includes('chromatic')) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
-    [[-3, 0, '#ff4f70'], [3, 0, '#45e6ff']].forEach(([dx, dy, color]) => {
-      ctx.save(); ctx.translate(dx as number, dy as number); polygonPath(ctx, corners); ctx.globalAlpha = 0.16; ctx.fillStyle = color as string; ctx.fill(); ctx.restore();
-    });
+  // Every selected treatment paints the complete clipped face with layered color fields.
+  const paintField = (offset: number, alpha: number, mode: GlobalCompositeOperation = 'source-over') => {
+    ctx.save(); ctx.globalCompositeOperation = mode; ctx.globalAlpha = alpha;
+    const gradient = ctx.createLinearGradient(left + Math.cos(phase + offset) * width, top, left + width, top + Math.sin(phase + offset) * height);
+    gradient.addColorStop(0, palette[(regionIndex + 0) % 3]); gradient.addColorStop(0.38, palette[(regionIndex + 1) % 3]); gradient.addColorStop(0.72, palette[(regionIndex + 2) % 3]); gradient.addColorStop(1, '#071013');
+    ctx.fillStyle = gradient; ctx.fillRect(left, top, width, height); ctx.restore();
+  };
+  const paintBlob = (x: number, y: number, radius: number, color: string, alpha: number, mode: GlobalCompositeOperation = 'screen') => {
+    ctx.save(); ctx.globalCompositeOperation = mode; ctx.globalAlpha = alpha;
+    const blob = ctx.createRadialGradient(x, y, 0, x, y, radius); blob.addColorStop(0, color); blob.addColorStop(0.45, `${color}aa`); blob.addColorStop(1, `${color}00`);
+    ctx.fillStyle = blob; ctx.fillRect(left, top, width, height); ctx.restore();
+  };
+  paintField(0, 0.92);
+  if (effects.includes('aurora')) { paintBlob(cx + Math.sin(phase) * width * 0.38, cy - height * 0.2, Math.max(width, height) * 0.8, '#55f7c8', 0.72); paintBlob(cx - width * 0.3, cy + Math.cos(phase * 0.8) * height * 0.3, Math.max(width, height) * 0.72, '#8d6bff', 0.62); paintBlob(cx + width * 0.25, cy + height * 0.25, Math.max(width, height) * 0.58, '#ff537d', 0.5); }
+  if (effects.includes('prismatic')) { paintField(1.9, 0.72, 'screen'); paintBlob(cx + Math.cos(phase * 1.3) * width * 0.28, cy, Math.max(width, height) * 0.62, '#fff36a', 0.42); paintBlob(cx - width * 0.25, cy + Math.sin(phase) * height * 0.32, Math.max(width, height) * 0.56, '#58d9ff', 0.45); }
+  if (effects.includes('energyBloom')) { for (let i = 0; i < 5; i += 1) paintBlob(cx + Math.cos(phase + i * 1.25) * width * 0.34, cy + Math.sin(phase * 0.9 + i) * height * 0.34, Math.max(width, height) * (0.35 + i * 0.08), palette[i % 3], 0.2); }
+  if (effects.includes('liquidChromatic')) { paintBlob(left + width * (0.2 + 0.15 * Math.sin(phase)), top + height * 0.35, Math.max(width, height) * 0.65, '#ff317f', 0.56, 'overlay'); paintBlob(left + width * 0.78, top + height * (0.62 + 0.16 * Math.cos(phase)), Math.max(width, height) * 0.7, '#26f1ff', 0.52, 'overlay'); }
+  if (effects.includes('kaleido')) {
+    ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = 0.33; ctx.translate(cx, cy); ctx.rotate(Math.sin(phase) * 0.18);
+    for (let i = 0; i < 6; i += 1) { ctx.rotate(Math.PI / 3); ctx.fillStyle = palette[i % 3]; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(width * 0.7, height * 0.12); ctx.lineTo(width * 0.18, height * 0.62); ctx.closePath(); ctx.fill(); }
     ctx.restore();
   }
+  if (effects.includes('invertCascade')) { paintField(phase * 0.7, 0.52, 'difference'); paintBlob(cx + Math.sin(phase * 1.4) * width * 0.3, cy, Math.max(width, height) * 0.7, '#ffffff', 0.26, 'difference'); paintBlob(cx - width * 0.28, cy + Math.cos(phase) * height * 0.25, Math.max(width, height) * 0.48, '#ff4f9a', 0.2, 'difference'); }
+  ctx.restore();
 };
 
 function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: OverlaySnapshot, source: SourceSnapshot, mirror: boolean, visualConfig: OverlayVisualConfig) {
@@ -409,8 +350,8 @@ export function StageCanvas({
           <div className="stage-visual-panel-heading"><strong>{language === 'zh' ? '连线与区域特效' : 'Connections and region effects'}</strong><button type="button" className="icon-button" onClick={() => setVisualPanelOpen(false)} aria-label={language === 'zh' ? '关闭设置' : 'Close settings'} title={language === 'zh' ? '关闭' : 'Close'}><X size={14} /></button></div>
           <div className="visual-controls-title">{language === 'zh' ? '连接线样式（可多选）' : 'Connection styles (multi-select)'}</div>
           <div className="visual-options">{([['portal', language === 'zh' ? '门户外框' : 'Portal frame'], ['fingers', language === 'zh' ? '手指链' : 'Finger chains'], ['bridges', language === 'zh' ? '同名桥接' : 'Matching bridges'], ['mesh', language === 'zh' ? '全连接网格' : 'Complete mesh'], ['fine', language === 'zh' ? '极简细线' : 'Minimal fine lines']] as [ConnectionStyle, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.connections.includes(value)} onChange={() => onVisualConfigChange('connections', value)} /><span>{label}</span></label>)}</div>
-          <div className="visual-controls-title">{language === 'zh' ? '矩形内部区域特效（可多选）' : 'Inside-rectangle effects (multi-select)'}</div>
-          <div className="visual-options">{([['prism', language === 'zh' ? '棱镜色散' : 'Prism'], ['scanlines', language === 'zh' ? '扫描线' : 'Scanlines'], ['neon', language === 'zh' ? '霓虹背景' : 'Neon backdrop'], ['invert', language === 'zh' ? '反相闪烁' : 'Invert flash'], ['energy', language === 'zh' ? '能量场' : 'Energy field'], ['grid', language === 'zh' ? '数字网格' : 'Digital grid'], ['particles', language === 'zh' ? '粒子流' : 'Particles'], ['chromatic', language === 'zh' ? '色差叠层' : 'Chromatic overlay'], ['warp', language === 'zh' ? '变形网格' : 'Warp grid'], ['ripple', language === 'zh' ? '波纹' : 'Ripple']] as [RegionEffect, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.effects.includes(value)} onChange={() => onVisualConfigChange('effects', value)} /><span>{label}</span></label>)}</div>
+          <div className="visual-controls-title">{language === 'zh' ? '复杂矩形内部色变（可多选）' : 'Complex full-region color treatments (multi-select)'}</div>
+          <div className="visual-options">{([['aurora', language === 'zh' ? '极光色场' : 'Aurora field'], ['prismatic', language === 'zh' ? '棱镜流变' : 'Prismatic flow'], ['invertCascade', language === 'zh' ? '级联反转' : 'Inversion cascade'], ['kaleido', language === 'zh' ? '万花镜变换' : 'Kaleidoscope'], ['liquidChromatic', language === 'zh' ? '液态色差' : 'Liquid chromatic'], ['energyBloom', language === 'zh' ? '能量绽放' : 'Energy bloom']] as [RegionEffect, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.effects.includes(value)} onChange={() => onVisualConfigChange('effects', value)} /><span>{label}</span></label>)}</div>
         </div> : null}
         <video
           className={`stage-video ${mirror ? 'is-mirrored' : ''}`}
