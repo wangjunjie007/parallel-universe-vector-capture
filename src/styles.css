@@ -1809,6 +1809,31 @@ a {
     gap: 8px;
   }
 
+  .stage-visual-panel {
+    top: 8px;
+    right: 8px;
+    width: min(298px, calc(100% - 16px));
+    padding: 9px;
+    gap: 6px;
+  }
+
+  .stage-visual-panel .visual-options {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px 6px;
+  }
+
+  .stage-visual-panel .visual-options label {
+    gap: 3px;
+    font-size: 8px;
+    white-space: nowrap;
+  }
+
+  .stage-visual-panel .visual-options input {
+    width: 12px;
+    height: 12px;
+    margin: 0;
+  }
+
   .capability-panel,
   .control-panel,
   .telemetry-panel,

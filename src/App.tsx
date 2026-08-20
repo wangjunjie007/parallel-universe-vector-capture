@@ -207,7 +207,11 @@ function buildOverlay(frames: readonly SemanticFrame[], width: number, height: n
       if (!point) continue;
       const trail = recent.flatMap((frame) => frame.extendedPoints.filter((item) => item.side === side && item.finger === finger).map((item) => ({ x: item.x, y: item.y, nx: width > 0 ? item.x / width : undefined, ny: height > 0 ? item.y / height : undefined })));
       let displayPoint = point;
-      if (smooth) {
+      const isFastPinchRelease = (finger === 'thumb' || finger === 'index')
+        && point.compressed === false
+        && point.releaseBlend !== undefined
+        && point.releaseBlend < 1;
+      if (smooth && !isFastPinchRelease) {
         const prior = recent
           .slice(0, -1)
           .slice(-4)

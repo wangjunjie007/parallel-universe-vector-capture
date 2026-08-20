@@ -229,6 +229,7 @@ export interface GeometryHintFrame {
 
 export interface TrackingConfig {
   confirmationFrames: number;
+  pinchReleaseConfirmationFrames: number;
   pinchGapPxAt1280: number;
   pinchReleaseBlendFrames: number;
   pinchEnterNormalized: number;
@@ -239,8 +240,9 @@ export interface TrackingConfig {
 
 export const DEFAULT_TRACKING_CONFIG: TrackingConfig = {
   confirmationFrames: 6,
+  pinchReleaseConfirmationFrames: 1,
   pinchGapPxAt1280: 1.5,
-  pinchReleaseBlendFrames: 18,
+  pinchReleaseBlendFrames: 3,
   pinchEnterNormalized: 0.38,
   pinchExitNormalized: 0.52,
   shortGapFrames: 3,

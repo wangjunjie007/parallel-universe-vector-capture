@@ -95,6 +95,7 @@ function mergedTrackingConfig(input: ManifestInput): TrackingConfig {
     ...DEFAULT_TRACKING_CONFIG,
     ...(input.tracking ?? {}),
     confirmationFrames: Math.max(1, Math.round(input.tracking?.confirmationFrames ?? DEFAULT_TRACKING_CONFIG.confirmationFrames)),
+    pinchReleaseConfirmationFrames: Math.max(1, Math.round(input.tracking?.pinchReleaseConfirmationFrames ?? DEFAULT_TRACKING_CONFIG.pinchReleaseConfirmationFrames)),
     pinchReleaseBlendFrames: Math.max(1, Math.round(input.tracking?.pinchReleaseBlendFrames ?? DEFAULT_TRACKING_CONFIG.pinchReleaseBlendFrames)),
   };
 }

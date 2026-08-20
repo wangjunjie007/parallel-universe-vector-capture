@@ -95,6 +95,23 @@ describe('SemanticProcessor', () => {
     expect(first.points.every((point) => !('compressed' in point) && !('releaseBlend' in point))).toBe(true);
   });
 
+  it('starts pinch separation on the first clear release frame and finishes within three frames by default', () => {
+    const tracker = new IdentityTracker();
+    const processor = createSemanticProcessor();
+    for (let frame = 0; frame < 6; frame += 1) runFrame(tracker, processor, frame, 'pinch');
+
+    const first = runFrame(tracker, processor, 6, 'open');
+    const firstThumb = first.extendedPoints.find((point) => point.side === 'hand_1' && point.finger === 'thumb');
+    expect(first.transitions).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'pinch_released', side: 'hand_1' })]));
+    expect(firstThumb).toMatchObject({ compressed: false });
+    expect(firstThumb?.releaseBlend).toBeGreaterThan(0);
+
+    runFrame(tracker, processor, 7, 'open');
+    const third = runFrame(tracker, processor, 8, 'open');
+    const thirdThumb = third.extendedPoints.find((point) => point.side === 'hand_1' && point.finger === 'thumb');
+    expect(thirdThumb?.releaseBlend).toBe(1);
+  });
+
   it('does not emit semantic points while identities are ambiguous', () => {
     const tracker = new IdentityTracker({ ambiguityMargin: 0.5 });
     const processor = createSemanticProcessor();

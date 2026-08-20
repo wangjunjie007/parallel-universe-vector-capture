@@ -41,9 +41,9 @@
     },
     "tracking": {
       "type": "object", "additionalProperties": false,
-      "required": ["confirmationFrames", "pinchGapPxAt1280", "pinchReleaseBlendFrames", "pinchEnterNormalized", "pinchExitNormalized", "shortGapFrames", "maxIdentityGapFrames", "allowed_point_counts", "full_open_count", "geometry_ten_point_direct_edges"],
+      "required": ["confirmationFrames", "pinchReleaseConfirmationFrames", "pinchGapPxAt1280", "pinchReleaseBlendFrames", "pinchEnterNormalized", "pinchExitNormalized", "shortGapFrames", "maxIdentityGapFrames", "allowed_point_counts", "full_open_count", "geometry_ten_point_direct_edges"],
       "properties": {
-        "confirmationFrames": { "type": "integer", "minimum": 1 }, "pinchGapPxAt1280": { "type": "number", "exclusiveMinimum": 0 },
+        "confirmationFrames": { "type": "integer", "minimum": 1 }, "pinchReleaseConfirmationFrames": { "type": "integer", "minimum": 1 }, "pinchGapPxAt1280": { "type": "number", "exclusiveMinimum": 0 },
         "pinchReleaseBlendFrames": { "type": "integer", "minimum": 0 }, "pinchEnterNormalized": { "type": "number", "minimum": 0 },
         "pinchExitNormalized": { "type": "number", "minimum": 0 }, "shortGapFrames": { "type": "integer", "minimum": 0 },
         "maxIdentityGapFrames": { "type": "integer", "minimum": 0 },

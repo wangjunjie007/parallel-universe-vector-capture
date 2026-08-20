@@ -212,6 +212,7 @@ export class SemanticProcessor {
       ...DEFAULT_TRACKING_CONFIG,
       ...options,
       confirmationFrames: Math.max(1, Math.round(options.confirmationFrames ?? DEFAULT_TRACKING_CONFIG.confirmationFrames)),
+      pinchReleaseConfirmationFrames: Math.max(1, Math.round(options.pinchReleaseConfirmationFrames ?? DEFAULT_TRACKING_CONFIG.pinchReleaseConfirmationFrames)),
       pinchReleaseBlendFrames: Math.max(1, Math.round(options.pinchReleaseBlendFrames ?? DEFAULT_TRACKING_CONFIG.pinchReleaseBlendFrames)),
     };
   }
@@ -293,7 +294,7 @@ export class SemanticProcessor {
         unmatchedCandidates: [],
         diagnostics: [],
       }, hand.side));
-    } else if (state.pinchStable && state.pinchFalseFrames >= threshold) {
+    } else if (state.pinchStable && state.pinchFalseFrames >= this.config.pinchReleaseConfirmationFrames) {
       state.pinchStable = false;
       state.pinchTrueFrames = 0;
       state.releaseStart = state.compressedPair
@@ -457,7 +458,11 @@ export class SemanticProcessor {
     // A pinch fixture can have straight detector chains while the fingers are
     // still touching.  Full-open is a post-release state, so require both
     // pinch latches to be released before promoting 4 -> 10.
-    if (this.phase === 'portal4' && !hand1?.pinchStable && !hand2?.pinchStable && hand1?.allOpenStable && hand2?.allOpenStable) {
+    const bothHandsCurrentlyOpen = Boolean(
+      hand1 && hand2
+      && FINGER_NAMES.every((finger) => hand1.extendedRaw[finger] && hand2.extendedRaw[finger]),
+    );
+    if (this.phase === 'portal4' && !hand1?.pinchStable && !hand2?.pinchStable && hand1?.allOpenStable && hand2?.allOpenStable && bothHandsCurrentlyOpen) {
       this.phase = 'portal10';
       transitions.push(transition('all_open_confirmed', input, undefined, 10));
     }
