@@ -746,7 +746,7 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
       permission: 'granted',
       phase: 'preview',
       mode: 'live',
-      source: { ...current.source, kind: 'camera', mirrored: current.source.kind === 'camera' ? current.source.mirrored : false, width, height, fps: metadata.frameRate ?? DEFAULT_FPS, name: 'camera', duration: undefined, rotation: 0, orientationLabel: width >= height ? 'landscape' : 'portrait' },
+      source: { ...current.source, kind: 'camera', mirrored: current.source.kind === 'camera' ? current.source.mirrored : true, width, height, fps: metadata.frameRate ?? DEFAULT_FPS, name: 'camera', duration: undefined, rotation: 0, orientationLabel: width >= height ? 'landscape' : 'portrait' },
       overlay: { ...current.overlay, width, height, hands: [], semanticCount: 0 },
       metrics: { ...current.metrics, alignment: 'presentation_time_estimate' },
       diagnostics: current.diagnostics.filter((item) => !['secure-context', 'camera-api', 'permission'].includes(item.id)),
@@ -872,7 +872,7 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     patchSnapshot((current) => ({
       mode: 'precise',
       phase: 'checking',
-      source: { ...initialSource(), mirrored: false },
+      source: { ...initialSource(), mirrored: true },
       overlay: initialOverlay(),
       metrics: {
         ...current.metrics,
