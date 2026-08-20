@@ -108,6 +108,7 @@ describe('live capture initialization provenance', () => {
 
     expect(controller.snapshot.phase).toBe('preview');
     expect(controller.snapshot.diagnostics.some((item) => item.title.includes('GPU delegate initialization failed'))).toBe(true);
+    expect(controller.snapshot.source.mirrored).toBe(true);
   });
 
   it('keeps a pending runtime fallback diagnostic when an existing stream restarts', async () => {
