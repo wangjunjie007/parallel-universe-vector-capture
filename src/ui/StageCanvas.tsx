@@ -6,8 +6,8 @@ import { formatNumber } from './format';
 import { t } from './i18n';
 import { buildEffectRegions, FINGER_ORDER, type OverlayPosition } from './overlayGeometry';
 
-export type ConnectionStyle = 'portal' | 'fingers' | 'bridges' | 'mesh';
-export type RegionEffect = 'prism' | 'scanlines' | 'neon' | 'invert' | 'energy' | 'grid' | 'particles' | 'chromatic';
+export type ConnectionStyle = 'portal' | 'fingers' | 'bridges' | 'mesh' | 'fine';
+export type RegionEffect = 'prism' | 'scanlines' | 'neon' | 'invert' | 'energy' | 'grid' | 'particles' | 'chromatic' | 'warp' | 'ripple';
 export interface OverlayVisualConfig { connections: ConnectionStyle[]; effects: RegionEffect[] }
 
 interface StageCanvasProps {
@@ -46,7 +46,7 @@ const fingerColors: Record<UiPoint['finger'], string> = {
 // Give the two overlay markers a small visual gap so they remain individually readable.
 const MIN_PINCH_MARKER_GAP = 10;
 
-const connectionColors: Record<ConnectionStyle, string> = { portal: '#91e7c2', fingers: '#8bd3dd', bridges: '#ffd166', mesh: '#c6a7ff' };
+const connectionColors: Record<ConnectionStyle, string> = { portal: '#91e7c2', fingers: '#8bd3dd', bridges: '#ffd166', mesh: '#c6a7ff', fine: '#d7fff0' };
 const regionPalettes = [
   ['#46d9a0', '#c6a7ff', '#ff9d83'],
   ['#8bd3dd', '#ffd166', '#ff7a90'],
@@ -143,8 +143,8 @@ const drawHand = (ctx: CanvasRenderingContext2D, hand: UiHand, width: number, he
 };
 
 const drawConnection = (ctx: CanvasRenderingContext2D, from: { x: number; y: number }, to: { x: number; y: number }, style: ConnectionStyle) => {
-  ctx.save(); ctx.strokeStyle = connectionColors[style]; ctx.globalAlpha = style === 'mesh' ? 0.22 : 0.7;
-  ctx.lineWidth = style === 'portal' ? 2.1 : style === 'mesh' ? 0.8 : 1.25;
+  ctx.save(); ctx.strokeStyle = connectionColors[style]; ctx.globalAlpha = style === 'mesh' ? 0.22 : style === 'fine' ? 0.46 : 0.7;
+  ctx.lineWidth = style === 'portal' ? 2.1 : style === 'mesh' ? 0.8 : style === 'fine' ? 0.55 : 1.25;
   if (style === 'fingers') ctx.setLineDash([5, 4]);
   if (style === 'bridges') ctx.setLineDash([2, 5]);
   ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke(); ctx.restore();
@@ -179,6 +179,17 @@ const drawRegionEffects = (ctx: CanvasRenderingContext2D, corners: OverlayPositi
     ctx.fillStyle = gradient;
     ctx.fillRect(left, top, width, height);
   }
+  if (effects.includes('neon')) {
+    const glow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, Math.max(width, height) * 0.78);
+    glow.addColorStop(0, `${palette[0]}62`);
+    glow.addColorStop(0.42, `${palette[1]}32`);
+    glow.addColorStop(1, `${palette[2]}05`);
+    ctx.fillStyle = glow;
+    ctx.fillRect(left, top, width, height);
+    ctx.globalAlpha = 0.34;
+    ctx.fillStyle = palette[0];
+    ctx.fillRect(left, top, width, Math.max(2, height * 0.025));
+  }
   if (effects.includes('scanlines')) { ctx.strokeStyle = 'rgba(145,231,194,.28)'; ctx.lineWidth = 1; for (let y = top; y < top + height; y += 6) { ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke(); } }
   if (effects.includes('invert')) { ctx.globalCompositeOperation = 'difference'; ctx.fillStyle = 'rgba(255,255,255,.16)'; ctx.fillRect(left, top, width, height); }
   if (effects.includes('energy')) {
@@ -203,23 +214,36 @@ const drawRegionEffects = (ctx: CanvasRenderingContext2D, corners: OverlayPositi
       ctx.beginPath(); ctx.arc(x, y, index % 3 === 0 ? 1.6 : 0.9, 0, Math.PI * 2); ctx.fill();
     }
   }
+  if (effects.includes('warp')) {
+    ctx.strokeStyle = `${palette[1]}55`;
+    ctx.lineWidth = 1;
+    for (let index = -2; index < 7; index += 1) {
+      const y = top + (index / 5) * height;
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.quadraticCurveTo(centerX, y + Math.sin(frame * 0.08 + index + regionIndex) * height * 0.16, left + width, y);
+      ctx.stroke();
+    }
+  }
+  if (effects.includes('ripple')) {
+    const phase = (frame * 0.045 + regionIndex * 0.23) % 1;
+    ctx.strokeStyle = `${palette[2]}8a`;
+    ctx.lineWidth = 1.4;
+    for (let ring = 0; ring < 3; ring += 1) {
+      const radius = Math.max(width, height) * ((phase + ring / 3) % 1) * 0.62;
+      ctx.globalAlpha = 0.72 - ring * 0.18;
+      ctx.beginPath();
+      ctx.ellipse(centerX, centerY, radius, radius * 0.62, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
   ctx.restore();
 
-  if (effects.includes('neon')) {
-    ctx.save();
-    ctx.shadowColor = palette[0];
-    ctx.shadowBlur = 16;
-    ctx.strokeStyle = `${palette[0]}d0`;
-    ctx.lineWidth = 1.8;
-    polygonPath(ctx, corners);
-    ctx.stroke();
-    ctx.restore();
-  }
   if (effects.includes('chromatic')) {
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
-    [[-2, 0, '#ff4f70'], [2, 0, '#45e6ff']].forEach(([dx, dy, color]) => {
-      ctx.save(); ctx.translate(dx as number, dy as number); ctx.strokeStyle = color as string; ctx.globalAlpha = 0.58; ctx.lineWidth = 1.2; polygonPath(ctx, corners); ctx.stroke(); ctx.restore();
+    [[-3, 0, '#ff4f70'], [3, 0, '#45e6ff']].forEach(([dx, dy, color]) => {
+      ctx.save(); ctx.translate(dx as number, dy as number); polygonPath(ctx, corners); ctx.globalAlpha = 0.16; ctx.fillStyle = color as string; ctx.fill(); ctx.restore();
     });
     ctx.restore();
   }
@@ -259,6 +283,7 @@ function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: Over
       if (visualConfig.connections.includes('fingers')) overlay.hands.forEach((hand) => { const points = FINGER_ORDER.map((finger) => get(`${hand.side}:${finger}`)).filter((p): p is { x: number; y: number } => Boolean(p)); points.forEach((point, index) => { if (index) drawConnection(ctx, points[index - 1], point, 'fingers'); }); });
       if (visualConfig.connections.includes('bridges')) FINGER_ORDER.forEach((finger) => { const left = get(`hand_1:${finger}`); const right = get(`hand_2:${finger}`); if (left && right) drawConnection(ctx, left, right, 'bridges'); });
       if (visualConfig.connections.includes('mesh')) { const points = [...positions.values()]; points.forEach((p, i) => points.slice(i + 1).forEach((other) => drawConnection(ctx, p, other, 'mesh'))); }
+      if (visualConfig.connections.includes('fine')) { const points = [...positions.values()]; points.forEach((point, index) => points.slice(index + 1).forEach((other) => drawConnection(ctx, point, other, 'fine'))); }
       overlay.hands.forEach((hand) => drawHand(ctx, hand, width, height, sourceWidth, sourceHeight, mirror));
       if (overlay.hands.length > 0) {
         ctx.save();
@@ -382,10 +407,10 @@ export function StageCanvas({
       <div className={`stage-viewport ${hasSource ? 'has-source' : 'is-empty'} phase-${phase}`} style={{ aspectRatio }}>
         {visualPanelOpen ? <div className="stage-visual-panel" role="dialog" aria-label={language === 'zh' ? '连线与区域特效' : 'Connections and region effects'}>
           <div className="stage-visual-panel-heading"><strong>{language === 'zh' ? '连线与区域特效' : 'Connections and region effects'}</strong><button type="button" className="icon-button" onClick={() => setVisualPanelOpen(false)} aria-label={language === 'zh' ? '关闭设置' : 'Close settings'} title={language === 'zh' ? '关闭' : 'Close'}><X size={14} /></button></div>
-          <div className="visual-controls-title">{language === 'zh' ? '连线样式（可多选）' : 'Connection styles (multi-select)'}</div>
-          <div className="visual-options">{([['portal', language === 'zh' ? '门户外框' : 'Portal frame'], ['fingers', language === 'zh' ? '手指链' : 'Finger chains'], ['bridges', language === 'zh' ? '同名桥接' : 'Matching bridges'], ['mesh', language === 'zh' ? '全连接网格' : 'Complete mesh']] as [ConnectionStyle, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.connections.includes(value)} onChange={() => onVisualConfigChange('connections', value)} /><span>{label}</span></label>)}</div>
-          <div className="visual-controls-title">{language === 'zh' ? '矩形区域特效（可多选）' : 'Rectangle effects (multi-select)'}</div>
-          <div className="visual-options">{([['prism', language === 'zh' ? '棱镜色散' : 'Prism'], ['scanlines', language === 'zh' ? '扫描线' : 'Scanlines'], ['neon', language === 'zh' ? '霓虹辉光' : 'Neon glow'], ['invert', language === 'zh' ? '反相闪烁' : 'Invert flash'], ['energy', language === 'zh' ? '能量场' : 'Energy field'], ['grid', language === 'zh' ? '数字网格' : 'Digital grid'], ['particles', language === 'zh' ? '粒子流' : 'Particles'], ['chromatic', language === 'zh' ? '色差边缘' : 'Chromatic edge']] as [RegionEffect, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.effects.includes(value)} onChange={() => onVisualConfigChange('effects', value)} /><span>{label}</span></label>)}</div>
+          <div className="visual-controls-title">{language === 'zh' ? '连接线样式（可多选）' : 'Connection styles (multi-select)'}</div>
+          <div className="visual-options">{([['portal', language === 'zh' ? '门户外框' : 'Portal frame'], ['fingers', language === 'zh' ? '手指链' : 'Finger chains'], ['bridges', language === 'zh' ? '同名桥接' : 'Matching bridges'], ['mesh', language === 'zh' ? '全连接网格' : 'Complete mesh'], ['fine', language === 'zh' ? '极简细线' : 'Minimal fine lines']] as [ConnectionStyle, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.connections.includes(value)} onChange={() => onVisualConfigChange('connections', value)} /><span>{label}</span></label>)}</div>
+          <div className="visual-controls-title">{language === 'zh' ? '矩形内部区域特效（可多选）' : 'Inside-rectangle effects (multi-select)'}</div>
+          <div className="visual-options">{([['prism', language === 'zh' ? '棱镜色散' : 'Prism'], ['scanlines', language === 'zh' ? '扫描线' : 'Scanlines'], ['neon', language === 'zh' ? '霓虹背景' : 'Neon backdrop'], ['invert', language === 'zh' ? '反相闪烁' : 'Invert flash'], ['energy', language === 'zh' ? '能量场' : 'Energy field'], ['grid', language === 'zh' ? '数字网格' : 'Digital grid'], ['particles', language === 'zh' ? '粒子流' : 'Particles'], ['chromatic', language === 'zh' ? '色差叠层' : 'Chromatic overlay'], ['warp', language === 'zh' ? '变形网格' : 'Warp grid'], ['ripple', language === 'zh' ? '波纹' : 'Ripple']] as [RegionEffect, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.effects.includes(value)} onChange={() => onVisualConfigChange('effects', value)} /><span>{label}</span></label>)}</div>
         </div> : null}
         <video
           className={`stage-video ${mirror ? 'is-mirrored' : ''}`}
