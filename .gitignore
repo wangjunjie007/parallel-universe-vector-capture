@@ -5,3 +5,5 @@ dist/
 coverage/
 output/
 .playwright-cli/
+public/models/hand_landmarker.task
+public/wasm/*.wasm
