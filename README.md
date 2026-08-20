@@ -8,6 +8,7 @@ videos, landmarks, and trajectories stay in the current browser session and are 
 
 ```bash
 npm install
+npm run prepare:assets
 npm run verify:assets
 npm run dev
 ```
