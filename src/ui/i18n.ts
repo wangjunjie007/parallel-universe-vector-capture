@@ -107,6 +107,13 @@ const copy = {
     hand1: '手 1',
     hand2: '手 2',
     secureNote: '浏览器本地处理 · 不上传媒体',
+    replayControls: '精确结果回放控制',
+    replayPlay: '播放回放',
+    replayPause: '暂停回放',
+    replayRestart: '从头播放',
+    replayPrevious: '上一帧',
+    replayNext: '下一帧',
+    replayTimeline: '回放时间轴',
   },
   en: {
     appName: 'PARALLEL UNIVERSE / VECTOR CAPTURE',
@@ -209,6 +216,13 @@ const copy = {
     hand1: 'Hand 1',
     hand2: 'Hand 2',
     secureNote: 'Browser-local processing · no media upload',
+    replayControls: 'Precise result replay controls',
+    replayPlay: 'Play replay',
+    replayPause: 'Pause replay',
+    replayRestart: 'Restart replay',
+    replayPrevious: 'Previous frame',
+    replayNext: 'Next frame',
+    replayTimeline: 'Replay timeline',
   },
 } as const;
 

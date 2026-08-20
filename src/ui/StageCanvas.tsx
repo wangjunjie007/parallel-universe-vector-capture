@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { RefObject, SyntheticEvent } from 'react';
-import { Crosshair, EyeOff, Hand, ScanLine } from 'lucide-react';
-import type { CapturePhase, Language, OverlaySnapshot, SourceSnapshot, UiHand, UiPoint, UiVector } from './types';
+import { Crosshair, EyeOff, Hand, Pause, Play, RotateCcw, ScanLine, StepBack, StepForward } from 'lucide-react';
+import type { CapturePhase, Language, OverlaySnapshot, ReplayActions, ReplaySnapshot, SourceSnapshot, UiHand, UiPoint, UiVector } from './types';
 import { formatNumber } from './format';
 import { t } from './i18n';
 
@@ -16,6 +16,10 @@ interface StageCanvasProps {
   videoRef: RefObject<HTMLVideoElement>;
   onVideoMetadata?: (event: SyntheticEvent<HTMLVideoElement>) => void;
   onVideoError?: () => void;
+  replay?: ReplaySnapshot;
+  replayActions?: Partial<ReplayActions>;
+  /** Called with the media clock as the visible video advances or seeks. */
+  onReplayTime?: (time: number) => void;
 }
 
 const handColors: Record<UiHand['side'], string> = {
@@ -158,6 +162,9 @@ export function StageCanvas({
   videoRef,
   onVideoMetadata,
   onVideoError,
+  replay,
+  replayActions,
+  onReplayTime,
 }: StageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   useCanvasDrawing(canvasRef, overlay, source, mirror);
@@ -169,8 +176,47 @@ export function StageCanvas({
     if (!videoStream && video.srcObject) video.srcObject = null;
     if (videoUrl && video.src !== videoUrl) video.src = videoUrl;
     if (!videoUrl && source.kind !== 'file' && source.kind !== 'recording') video.removeAttribute('src');
-    if (videoStream || videoUrl) void video.play().catch(() => undefined);
-  }, [source.kind, videoRef, videoStream, videoUrl]);
+    if ((videoStream || videoUrl) && !replay?.ready) void video.play().catch(() => undefined);
+  }, [source.kind, videoRef, videoStream, videoUrl, replay?.ready]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !replay?.ready) return;
+    let stopped = false;
+    let callbackId: number | undefined;
+    const notify = () => {
+      if (!stopped) onReplayTime?.(Number.isFinite(video.currentTime) ? video.currentTime : 0);
+    };
+    const onTimeUpdate = () => notify();
+    const onSeeking = () => notify();
+    const onPlay = () => notify();
+    video.addEventListener('timeupdate', onTimeUpdate);
+    video.addEventListener('seeking', onSeeking);
+    video.addEventListener('play', onPlay);
+    video.addEventListener('pause', notify);
+    video.addEventListener('ended', notify);
+    const requestFrame = (video as unknown as { requestVideoFrameCallback?: (cb: (now: number, metadata: VideoFrameCallbackMetadata) => void) => number }).requestVideoFrameCallback;
+    if (typeof requestFrame === 'function') {
+      const tick = (_now: number, metadata: VideoFrameCallbackMetadata) => {
+        if (stopped) return;
+        onReplayTime?.(metadata.mediaTime);
+        callbackId = requestFrame.call(video, tick);
+      };
+      callbackId = requestFrame.call(video, tick);
+    }
+    notify();
+    return () => {
+      stopped = true;
+      if (callbackId !== undefined && 'cancelVideoFrameCallback' in video) {
+        (video as HTMLVideoElement & { cancelVideoFrameCallback?: (id: number) => void }).cancelVideoFrameCallback?.(callbackId);
+      }
+      video.removeEventListener('timeupdate', onTimeUpdate);
+      video.removeEventListener('seeking', onSeeking);
+      video.removeEventListener('play', onPlay);
+      video.removeEventListener('pause', notify);
+      video.removeEventListener('ended', notify);
+    };
+  }, [onReplayTime, replay?.ready, videoRef]);
 
   const hasSource = source.kind !== 'none' || Boolean(videoStream || videoUrl);
   const statusLabel = phase === 'recording' ? t(language, 'recording') : phase === 'preview' ? t(language, 'preview') : phase === 'processing' ? t(language, 'processing') : phase === 'complete' ? t(language, 'complete') : t(language, 'idle');
@@ -224,6 +270,44 @@ export function StageCanvas({
           <span>{t(language, 'time')} {formatNumber(overlay.sourceTime, 3)}s</span>
         </div>
       </div>
+      {replay?.ready && replayActions?.seekReplay && replayActions.playReplay && replayActions.pauseReplay && replayActions.restartReplay && replayActions.stepReplay ? (() => {
+        const actions = replayActions as ReplayActions;
+        return (
+        <div className="replay-controls" aria-label={t(language, 'replayControls')}>
+          <div className="replay-buttons">
+            <button type="button" className="icon-button replay-icon-button" onClick={() => void actions.restartReplay()} aria-label={t(language, 'replayRestart')} title={t(language, 'replayRestart')}>
+              <RotateCcw size={15} />
+            </button>
+            <button type="button" className="icon-button replay-icon-button" onClick={() => void actions.stepReplay(-1)} aria-label={t(language, 'replayPrevious')} title={t(language, 'replayPrevious')}>
+              <StepBack size={15} />
+            </button>
+            {replay.playing ? (
+              <button type="button" className="icon-button replay-icon-button replay-primary" onClick={actions.pauseReplay} aria-label={t(language, 'replayPause')} title={t(language, 'replayPause')}>
+                <Pause size={16} />
+              </button>
+            ) : (
+              <button type="button" className="icon-button replay-icon-button replay-primary" onClick={() => void actions.playReplay()} aria-label={t(language, 'replayPlay')} title={t(language, 'replayPlay')}>
+                <Play size={16} />
+              </button>
+            )}
+            <button type="button" className="icon-button replay-icon-button" onClick={() => void actions.stepReplay(1)} aria-label={t(language, 'replayNext')} title={t(language, 'replayNext')}>
+              <StepForward size={15} />
+            </button>
+          </div>
+          <input
+            className="replay-timeline"
+            type="range"
+            min={0}
+            max={Math.max(replay.duration, 0.001)}
+            step={0.001}
+            value={Math.min(Math.max(replay.currentTime, 0), Math.max(replay.duration, 0.001))}
+            onChange={(event) => void actions.seekReplay(Number(event.target.value))}
+            aria-label={t(language, 'replayTimeline')}
+          />
+          <span className="replay-timecode">{formatNumber(replay.currentTime, 2)} / {formatNumber(replay.duration, 2)}s</span>
+        </div>
+        );
+      })() : null}
       <div className="stage-footnote">
         <span>{t(language, 'secureNote')}</span>
         <span>{source.orientationLabel ?? `${t(language, 'orientation')} ${source.rotation}°`}</span>

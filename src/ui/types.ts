@@ -78,6 +78,25 @@ export interface OverlaySnapshot {
   sourceTime?: number;
 }
 
+export interface ReplaySnapshot {
+  ready: boolean;
+  currentTime: number;
+  duration: number;
+  currentFrame?: number;
+  totalFrames?: number;
+  playing: boolean;
+  /** Quality flags for the currently displayed source frame. */
+  flags?: string[];
+}
+
+export interface ReplayActions {
+  playReplay: () => void | Promise<void>;
+  pauseReplay: () => void;
+  restartReplay: () => void | Promise<void>;
+  seekReplay: (time: number) => void | Promise<void>;
+  stepReplay: (direction: -1 | 1) => void | Promise<void>;
+}
+
 export interface SourceSnapshot {
   kind: 'none' | 'camera' | 'recording' | 'file';
   name?: string;
@@ -136,6 +155,7 @@ export interface CaptureUiSnapshot {
   delegate?: 'GPU' | 'CPU' | 'unknown';
   errorMessage?: string;
   processProgress?: number;
+  replay?: ReplaySnapshot;
 }
 
 export interface CaptureUiActions {
@@ -155,6 +175,11 @@ export interface CaptureUiActions {
   setPrivacyOpen: (open: boolean) => void;
   downloadStandard: () => void | Promise<void>;
   downloadDiagnostics: () => void | Promise<void>;
+  playReplay?: () => void | Promise<void>;
+  pauseReplay?: () => void;
+  restartReplay?: () => void | Promise<void>;
+  seekReplay?: (time: number) => void | Promise<void>;
+  stepReplay?: (direction: -1 | 1) => void | Promise<void>;
 }
 
 export interface CaptureUiController {
@@ -163,6 +188,8 @@ export interface CaptureUiController {
   videoStream?: MediaStream | null;
   videoUrl?: string;
   videoRef?: import('react').RefObject<HTMLVideoElement>;
+  replay?: ReplaySnapshot;
+  replayActions?: Partial<ReplayActions>;
 }
 
 export interface AppProps {
