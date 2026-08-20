@@ -18,6 +18,11 @@ const isVideoFrame = (value: InferenceFrameInput['image']): value is VideoFrame 
 const isImageBitmap = (value: InferenceFrameInput['image']): value is ImageBitmap =>
   typeof ImageBitmap !== 'undefined' && value instanceof ImageBitmap;
 
+const releaseFrameInput = (image: InferenceFrameInput['image']): void => {
+  if (!isVideoFrame(image) && !isImageBitmap(image)) return;
+  try { image.close(); } catch { /* detached or already closed */ }
+};
+
 const toSourcePoint = (landmark: NormalizedLandmark, width: number, height: number) => ({
   x: Math.max(0, Math.min(width, landmark.x * width)),
   y: Math.max(0, Math.min(height, landmark.y * height)),
@@ -47,11 +52,23 @@ export class HandLandmarkerEngine {
   private options: InferenceInitOptions | undefined;
   private delegate: 'GPU' | 'CPU' | 'unknown' = 'unknown';
   private lastTimestamp = -1;
+  /**
+   * Invalidates in-flight model construction when a new mode/source starts.
+   * MediaPipe keeps VIDEO tracking state inside the HandLandmarker instance,
+   * so an instance must never survive across independent inference sessions.
+   */
+  private initGeneration = 0;
 
   async init(options: InferenceInitOptions): Promise<InferenceInitResult> {
-    this.options = options;
+    const generation = ++this.initGeneration;
+    this.closeCurrent();
+    this.options = { ...options };
+    this.delegate = 'unknown';
+    this.lastTimestamp = -1;
     const model = await fetchVerifiedBytes(options.modelUrl, options.modelSha256);
+    this.assertCurrent(generation);
     const simd = await FilesetResolver.isSimdSupported();
+    this.assertCurrent(generation);
     const runningInWorker = typeof document === 'undefined';
     // The package's classic loader is injected with a script tag on the main
     // thread, while module workers require the ESM loader. If a legacy browser
@@ -68,30 +85,54 @@ export class HandLandmarkerEngine {
       ? options.wasmModuleSha256 ?? options.wasmSha256
       : simd ? options.wasmSha256 : options.wasmNoSimdSha256;
     const wasm = await fetchVerifiedBytes(`${options.wasmUrl.replace(/\/$/, '')}/${wasmName}`, wasmExpected);
+    this.assertCurrent(generation);
     const fileset = await FilesetResolver.forVisionTasks(options.wasmUrl, useModule);
+    this.assertCurrent(generation);
     const base = { modelAssetBuffer: model.bytes } as const;
+    let created: HandLandmarker | undefined;
+    let delegate: 'GPU' | 'CPU' = options.preferGpu === false ? 'CPU' : 'GPU';
     try {
-      this.landmarker = await HandLandmarker.createFromOptions(fileset, {
-        baseOptions: { ...base, delegate: options.preferGpu === false ? 'CPU' : 'GPU' },
-        runningMode: 'VIDEO',
-        numHands: 2,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-      this.delegate = options.preferGpu === false ? 'CPU' : 'GPU';
-    } catch (gpuError) {
-      if (options.preferGpu === false) throw gpuError;
-      this.landmarker = await HandLandmarker.createFromOptions(fileset, {
-        baseOptions: { ...base, delegate: 'CPU' },
-        runningMode: 'VIDEO',
-        numHands: 2,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-      this.delegate = 'CPU';
+      try {
+        created = await HandLandmarker.createFromOptions(fileset, {
+          baseOptions: { ...base, delegate: options.preferGpu === false ? 'CPU' : 'GPU' },
+          runningMode: 'VIDEO',
+          numHands: 2,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+        delegate = options.preferGpu === false ? 'CPU' : 'GPU';
+      } catch (gpuError) {
+        if (options.preferGpu === false) throw gpuError;
+        this.assertCurrent(generation);
+        created = await HandLandmarker.createFromOptions(fileset, {
+          baseOptions: { ...base, delegate: 'CPU' },
+          runningMode: 'VIDEO',
+          numHands: 2,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+        delegate = 'CPU';
+      }
+      this.assertCurrent(generation);
+    } catch (error) {
+      if (created) {
+        try { created.close(); } catch { /* best-effort cleanup */ }
+      }
+      throw error;
     }
+    // A newer init/close may have happened while createFromOptions was
+    // resolving. Do not publish a stale model into the new session.
+    if (!created || this.initGeneration !== generation) {
+      if (created) {
+        try { created.close(); } catch { /* best-effort cleanup */ }
+      }
+      throw new Error('Hand landmarker initialization superseded');
+    }
+    this.landmarker = created;
+    this.delegate = delegate;
+    this.lastTimestamp = -1;
     return {
       runtime: 'main-thread',
       delegate: this.delegate,
@@ -106,28 +147,46 @@ export class HandLandmarkerEngine {
   }
 
   process(input: InferenceFrameInput): InferenceFrameOutput {
-    if (!this.landmarker) throw new Error('Hand landmarker is not initialized');
-    const timestamp = Math.max(input.timestamp_us / 1000, this.lastTimestamp + 0.001);
-    this.lastTimestamp = timestamp;
-    const started = performance.now();
-    const result = this.landmarker.detectForVideo(input.image, timestamp);
-    if (isVideoFrame(input.image) || isImageBitmap(input.image)) input.image.close();
-    return {
-      frame: input.frame,
-      time: input.time,
-      timestamp_us: input.timestamp_us,
-      width: input.width,
-      height: input.height,
-      candidates: mapHandResult(result, input.width, input.height),
-      inferenceMs: performance.now() - started,
-      delegate: this.delegate,
-    };
+    // A transferred frame belongs to the engine as soon as process() is
+    // called. Release it for successful inference, MediaPipe/map failures, and
+    // stale calls that arrive after the engine has been closed.
+    try {
+      if (!this.landmarker) throw new Error('Hand landmarker is not initialized');
+      const timestamp = Math.max(input.timestamp_us / 1000, this.lastTimestamp + 0.001);
+      this.lastTimestamp = timestamp;
+      const started = performance.now();
+      const result = this.landmarker.detectForVideo(input.image, timestamp);
+      return {
+        frame: input.frame,
+        time: input.time,
+        timestamp_us: input.timestamp_us,
+        width: input.width,
+        height: input.height,
+        candidates: mapHandResult(result, input.width, input.height),
+        inferenceMs: performance.now() - started,
+        delegate: this.delegate,
+      };
+    } finally {
+      releaseFrameInput(input.image);
+    }
   }
 
   close(): void {
-    this.landmarker?.close();
+    ++this.initGeneration;
+    this.closeCurrent();
+  }
+
+  private closeCurrent(): void {
+    try { this.landmarker?.close(); } catch { /* cleanup must remain idempotent */ }
     this.landmarker = undefined;
     this.lastTimestamp = -1;
     this.options = undefined;
+    this.delegate = 'unknown';
+  }
+
+  private assertCurrent(generation: number): void {
+    if (this.initGeneration !== generation) {
+      throw new Error('Hand landmarker initialization superseded');
+    }
   }
 }

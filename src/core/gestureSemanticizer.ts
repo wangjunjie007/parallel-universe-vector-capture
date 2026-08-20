@@ -2,6 +2,7 @@ import {
   DEFAULT_TRACKING_CONFIG,
   FINGER_NAMES,
   LANDMARK_INDEX,
+  type ExtendedSemanticPoint,
   type FingerName,
   type GestureState,
   type HandId,
@@ -65,6 +66,10 @@ function emptyState<T>(value: T): Record<FingerName, T> {
 
 function clonePoint(point: Point2D): Point2D {
   return { x: point.x, y: point.y };
+}
+
+function strictPoint(point: ExtendedSemanticPoint): SemanticPoint {
+  return { side: point.side, finger: point.finger, x: point.x, y: point.y };
 }
 
 function landmark(hand: TrackedHand, index: number): Point2D | undefined {
@@ -307,7 +312,12 @@ export class SemanticProcessor {
     };
   }
 
-  private pointForFinger(hand: TrackedHand, finger: FingerName, width: number, state: HandState): Point2D | undefined {
+  private pointForFinger(
+    hand: TrackedHand,
+    finger: FingerName,
+    width: number,
+    state: HandState,
+  ): (Point2D & Pick<ExtendedSemanticPoint, 'compressed' | 'releaseBlend'>) | undefined {
     const measured = fingerTip(hand, finger);
     if (!measured) return undefined;
     const isPinchPair = finger === 'thumb' || finger === 'index';
@@ -324,7 +334,7 @@ export class SemanticProcessor {
         index: { x: center.x + (pair.index.x - center.x) * scale, y: center.y + (pair.index.y - center.y) * scale },
       };
       state.compressedPair = compressed;
-      return clonePoint(compressed[finger]);
+      return { ...compressed[finger], compressed: true, releaseBlend: 0 };
     }
     if (state.releaseFramesRemaining > 0 && state.releaseStart) {
       const elapsed = this.config.pinchReleaseBlendFrames - state.releaseFramesRemaining + 1;
@@ -333,13 +343,15 @@ export class SemanticProcessor {
       return {
         x: start.x + (measured.x - start.x) * factor,
         y: start.y + (measured.y - start.y) * factor,
+        compressed: false,
+        releaseBlend: factor,
       };
     }
-    return measured;
+    return { ...measured, compressed: false, releaseBlend: 1 };
   }
 
-  private buildExtendedPoints(hands: TrackedHand[], evidence: Map<HandId, HandGestureEvidence>, width: number): SemanticPoint[] {
-    const points: SemanticPoint[] = [];
+  private buildExtendedPoints(hands: TrackedHand[], evidence: Map<HandId, HandGestureEvidence>, width: number): ExtendedSemanticPoint[] {
+    const points: ExtendedSemanticPoint[] = [];
     for (const hand of hands) {
       const state = this.handStates.get(hand.side) ?? makeHandState();
       const handEvidence = evidence.get(hand.side);
@@ -351,7 +363,7 @@ export class SemanticProcessor {
       }
       for (const finger of fingers) {
         const point = this.pointForFinger(hand, finger, width, state);
-        if (point) points.push({ side: hand.side, finger, x: point.x, y: point.y });
+        if (point) points.push({ side: hand.side, finger, ...point });
       }
     }
     return points;
@@ -417,14 +429,14 @@ export class SemanticProcessor {
         const bySide = new Map(extendedPoints.map((point) => [`${point.side}:${point.finger}`, point]));
         const required = ['hand_1:thumb', 'hand_1:index', 'hand_2:thumb', 'hand_2:index'];
         if (required.every((id) => bySide.has(id))) {
-          points = required.map((id) => bySide.get(id) as SemanticPoint);
+          points = required.map((id) => strictPoint(bySide.get(id) as ExtendedSemanticPoint));
           count = 4;
         }
       } else if (this.phase === 'portal10') {
         const bySide = new Map(extendedPoints.map((point) => [`${point.side}:${point.finger}`, point]));
         const required = (['hand_1', 'hand_2'] as HandId[]).flatMap((side) => FINGER_NAMES.map((finger) => `${side}:${finger}`));
         if (required.every((id) => bySide.has(id))) {
-          points = required.map((id) => bySide.get(id) as SemanticPoint);
+          points = required.map((id) => strictPoint(bySide.get(id) as ExtendedSemanticPoint));
           count = 10;
         }
       }

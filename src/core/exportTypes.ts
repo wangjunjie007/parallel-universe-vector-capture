@@ -14,6 +14,7 @@ import {
   type SemanticTracksFile,
   type TrackingConfig,
   type ExportBundle,
+  type ExtendedSemanticPoint,
 } from './types';
 import { buildGeometryHints, geometryHintsToNdjson } from './geometryHintBuilder';
 
@@ -28,6 +29,58 @@ export interface SemanticValidation {
   valid: boolean;
   errors: string[];
   warnings: string[];
+}
+
+export interface GeometryQualitySummary {
+  geometry_valid: boolean;
+  /** Number of geometry hint frames included in the package. */
+  geometry_frame_count: number;
+  /** Frames whose topology is invalid or carries a geometry warning. */
+  geometry_invalid_frames: number[];
+  /** Total warning entries across all hint frames, including repeated codes. */
+  geometry_warning_count: number;
+  /** Backwards-compatible alias retaining the original field name. */
+  geometry_warning_frames: number[];
+  geometry_warnings: string[];
+}
+
+/**
+ * Reduce per-frame geometry diagnostics to the package-level quality fields.
+ * Warning codes are de-duplicated while frame numbers retain first-seen order
+ * so the summary remains deterministic and easy to inspect alongside NDJSON.
+ */
+export function summarizeGeometryHints(hints: readonly GeometryHintFrame[]): GeometryQualitySummary {
+  const warningFrames: number[] = [];
+  const warningFrameSet = new Set<number>();
+  const warnings: string[] = [];
+  const warningSet = new Set<string>();
+  let warningCount = 0;
+
+  for (const hint of hints) {
+    const frameWarnings = hint.quality.warnings;
+    if (!hint.quality.valid || frameWarnings.length > 0) {
+      if (!warningFrameSet.has(hint.frame)) {
+        warningFrameSet.add(hint.frame);
+        warningFrames.push(hint.frame);
+      }
+    }
+    warningCount += frameWarnings.length;
+    for (const warning of frameWarnings) {
+      if (!warningSet.has(warning)) {
+        warningSet.add(warning);
+        warnings.push(warning);
+      }
+    }
+  }
+
+  return {
+    geometry_valid: warningFrames.length === 0,
+    geometry_frame_count: hints.length,
+    geometry_invalid_frames: warningFrames,
+    geometry_warning_count: warningCount,
+    geometry_warning_frames: warningFrames,
+    geometry_warnings: warnings,
+  };
 }
 
 function safeSourceName(name: string | undefined): string | undefined {
@@ -108,7 +161,7 @@ function sortedFrames(frames: SemanticFrame[]): SemanticFrame[] {
   return [...frames].sort((a, b) => a.frame - b.frame || a.time - b.time);
 }
 
-function sortedPoints(points: SemanticPoint[]): SemanticPoint[] {
+function sortedPoints<T extends SemanticPoint>(points: T[]): T[] {
   const fingerRank = new Map(FINGER_NAMES.map((finger, index) => [finger, index]));
   return [...points].sort((a, b) => a.side.localeCompare(b.side) || (fingerRank.get(a.finger) ?? 99) - (fingerRank.get(b.finger) ?? 99));
 }
@@ -168,7 +221,7 @@ export function buildSemanticTracks(frames: SemanticFrame[], options: SemanticEx
       frame: frame.frame,
       time: frame.time,
       count: frame.count,
-      points: sortedPoints(frame.points).map((point) => ({ ...point })),
+      points: sortedPoints(frame.points).map(({ side, finger, x, y }) => ({ side, finger, x, y })),
     })),
   };
 }
@@ -178,14 +231,19 @@ export function buildFingertipTracks(frames: SemanticFrame[], options: SemanticE
   const { width, height } = dimensions(sorted, options);
   const tracks: Record<string, FingerSample[]> = {};
   for (const frame of sorted) {
-    for (const point of sortedPoints(frame.extendedPoints)) {
+    for (const point of sortedPoints<ExtendedSemanticPoint>(frame.extendedPoints)) {
       const id = pointId(point);
       (tracks[id] ??= []).push({
-        ...point,
+        side: point.side,
+        finger: point.finger,
+        x: point.x,
+        y: point.y,
         frame: frame.frame,
         time: frame.time,
         timestamp_us: frame.timestamp_us,
         interpolated: frame.flags.interpolated,
+        ...(point.compressed === undefined ? {} : { compressed: point.compressed }),
+        ...(point.releaseBlend === undefined ? {} : { releaseBlend: point.releaseBlend }),
         quality: frame.flags.needsReview ? 0 : 1,
       });
     }
@@ -206,10 +264,10 @@ export function buildPalmTracks(frames: SemanticFrame[], options: SemanticExport
         time: frame.time,
         timestamp_us: frame.timestamp_us,
         side,
-        x: palm?.x ?? Number.NaN,
-        y: palm?.y ?? Number.NaN,
-        scale: palm?.scale ?? Number.NaN,
-        orientation: palm?.orientation ?? Number.NaN,
+        x: palm?.x ?? null,
+        y: palm?.y ?? null,
+        scale: palm?.scale ?? null,
+        orientation: palm?.orientation ?? null,
         visible: Boolean(palm?.visible),
         ...(palm?.identityAmbiguous ? { identityAmbiguous: true } : {}),
       });
@@ -268,7 +326,15 @@ export function buildExportBundle(frames: SemanticFrame[], manifestInput: Manife
   const palm_tracks = buildPalmTracks(frames, options);
   const hints: GeometryHintFrame[] = buildGeometryHints(frames);
   const validation = validateSemanticFrames(frames, options);
-  const quality = { valid: validation.valid, errors: validation.errors, warnings: validation.warnings, frame_count: semantic_tracks.frame_count };
+  const geometryQuality = summarizeGeometryHints(hints);
+  const quality = {
+    valid: validation.valid && geometryQuality.geometry_valid,
+    errors: validation.errors,
+    warnings: validation.warnings,
+    frame_count: semantic_tracks.frame_count,
+    needs_review: manifest.quality.needs_review === true || !validation.valid || !geometryQuality.geometry_valid,
+    ...geometryQuality,
+  };
   return {
     manifest: { ...manifest, quality: { ...manifest.quality, ...quality } },
     semantic_tracks,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { advancePresentedFrame, processVideoFile } from '../../src/runtime/videoSource';
+import { advancePresentedFrame, inspectVideoFile, processVideoFile } from '../../src/runtime/videoSource';
 
 describe('advancePresentedFrame', () => {
   it('records frames missed before the first RVFC callback', () => {
@@ -31,11 +31,13 @@ describe('advancePresentedFrame', () => {
 describe('processVideoFile fallback', () => {
   const originalCreateElement = document.createElement.bind(document);
   const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
 
   afterEach(() => {
     vi.restoreAllMocks();
     Object.defineProperty(document, 'createElement', { configurable: true, value: originalCreateElement });
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: originalCreateObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: originalRevokeObjectURL });
   });
 
   it('marks seek-based processing as a presentation-time estimate', async () => {
@@ -87,16 +89,135 @@ describe('processVideoFile fallback', () => {
       method: 'seek-estimate',
     });
   });
+
+  it('cleans the temporary element after a metadata decode failure without revoking the caller URL', async () => {
+    const video = originalCreateElement('video');
+    let loadCount = 0;
+    const load = vi.fn(() => {
+      loadCount += 1;
+      if (loadCount === 1) video.dispatchEvent(new Event('error'));
+    });
+    const pause = vi.fn();
+    const removeAttribute = vi.fn();
+    Object.defineProperties(video, {
+      load: { configurable: true, value: load },
+      pause: { configurable: true, value: pause },
+      removeAttribute: { configurable: true, value: removeAttribute },
+    });
+    vi.spyOn(document, 'createElement').mockReturnValue(video);
+    const revoke = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+
+    await expect(processVideoFile({
+      name: 'broken.webm',
+      width: 640,
+      height: 360,
+      duration: 1,
+      mimeType: 'video/webm',
+      url: 'blob:caller-owned',
+    }, { onFrame: vi.fn() })).rejects.toThrow('Video could not be decoded');
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(removeAttribute).toHaveBeenCalledWith('src');
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it('cleans the temporary element and preserves a synchronous load error', async () => {
+    const video = originalCreateElement('video');
+    let loadCount = 0;
+    const load = vi.fn(() => {
+      loadCount += 1;
+      if (loadCount === 1) throw new Error('load exploded');
+    });
+    const pause = vi.fn();
+    const removeAttribute = vi.fn();
+    Object.defineProperties(video, {
+      load: { configurable: true, value: load },
+      pause: { configurable: true, value: pause },
+      removeAttribute: { configurable: true, value: removeAttribute },
+    });
+    vi.spyOn(document, 'createElement').mockReturnValue(video);
+
+    await expect(processVideoFile({
+      name: 'throwing.webm',
+      width: 640,
+      height: 360,
+      duration: 1,
+      mimeType: 'video/webm',
+      url: 'blob:throwing',
+    }, { onFrame: vi.fn() })).rejects.toThrow('load exploded');
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(removeAttribute).toHaveBeenCalledWith('src');
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('cleans the temporary element when processing was already cancelled', async () => {
+    const video = originalCreateElement('video');
+    const load = vi.fn();
+    const pause = vi.fn();
+    const removeAttribute = vi.fn();
+    Object.defineProperties(video, {
+      load: { configurable: true, value: load },
+      pause: { configurable: true, value: pause },
+      removeAttribute: { configurable: true, value: removeAttribute },
+    });
+    vi.spyOn(document, 'createElement').mockReturnValue(video);
+    const abort = new AbortController();
+    abort.abort();
+
+    await expect(processVideoFile({
+      name: 'cancelled.webm',
+      width: 640,
+      height: 360,
+      duration: 1,
+      mimeType: 'video/webm',
+      url: 'blob:cancelled',
+    }, { signal: abort.signal, onFrame: vi.fn() })).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(removeAttribute).toHaveBeenCalledWith('src');
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('revokes an inspection URL when loading throws before metadata is available', async () => {
+    const video = originalCreateElement('video');
+    let loadCount = 0;
+    const load = vi.fn(() => {
+      loadCount += 1;
+      if (loadCount === 1) throw new Error('metadata load exploded');
+    });
+    const removeAttribute = vi.fn();
+    Object.defineProperties(video, {
+      load: { configurable: true, value: load },
+      pause: { configurable: true, value: vi.fn() },
+      removeAttribute: { configurable: true, value: removeAttribute },
+    });
+    vi.spyOn(document, 'createElement').mockReturnValue(video);
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:inspection') });
+    const revoke = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+
+    await expect(inspectVideoFile(new File(['video'], 'broken.webm', { type: 'video/webm' }))).rejects.toThrow('metadata load exploded');
+
+    expect(removeAttribute).toHaveBeenCalledWith('src');
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith('blob:inspection');
+  });
 });
 
 describe('processVideoFile RVFC pacing', () => {
   const originalCreateElement = document.createElement.bind(document);
   const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalImageBitmap = globalThis.ImageBitmap;
 
   afterEach(() => {
     vi.restoreAllMocks();
     Object.defineProperty(document, 'createElement', { configurable: true, value: originalCreateElement });
     Object.defineProperty(globalThis, 'createImageBitmap', { configurable: true, value: originalCreateImageBitmap });
+    Object.defineProperty(globalThis, 'ImageBitmap', { configurable: true, value: originalImageBitmap });
   });
 
   it('pauses each presented frame until its consumer finishes', async () => {
@@ -469,5 +590,91 @@ describe('processVideoFile RVFC pacing', () => {
       alignment: 'exact_source_frames',
       method: 'rvfc-paced',
     });
+  });
+
+  it('stops scheduling after abort and eventually releases an in-flight snapshot', async () => {
+    class OwnedBitmap {
+      close = vi.fn();
+    }
+    const video = originalCreateElement('video');
+    const callbacks = new Map<number, VideoFrameRequestCallback>();
+    let callbackId = 0;
+    let paused = true;
+    const requestFrame = vi.fn((callback: VideoFrameRequestCallback) => {
+      const id = ++callbackId;
+      callbacks.set(id, callback);
+      return id;
+    });
+    const play = vi.fn(async () => {
+      paused = false;
+      queueMicrotask(() => {
+        const entry = callbacks.entries().next().value as [number, VideoFrameRequestCallback] | undefined;
+        if (!entry) return;
+        callbacks.delete(entry[0]);
+        entry[1](performance.now(), {
+          mediaTime: 0.1,
+          presentedFrames: 2,
+          expectedDisplayTime: performance.now(),
+          presentationTime: performance.now(),
+          width: 640,
+          height: 360,
+        });
+      });
+    });
+    Object.defineProperties(video, {
+      duration: { configurable: true, value: 0.3 },
+      videoWidth: { configurable: true, value: 640 },
+      videoHeight: { configurable: true, value: 360 },
+      readyState: { configurable: true, value: 4 },
+      paused: { configurable: true, get: () => paused },
+      ended: { configurable: true, value: false },
+      load: { configurable: true, value: () => video.dispatchEvent(new Event('loadedmetadata')) },
+      play: { configurable: true, value: play },
+      pause: { configurable: true, value: vi.fn(() => { paused = true; }) },
+      removeAttribute: { configurable: true, value: vi.fn() },
+      requestVideoFrameCallback: { configurable: true, value: requestFrame },
+      cancelVideoFrameCallback: { configurable: true, value: (id: number) => callbacks.delete(id) },
+    });
+    vi.spyOn(document, 'createElement').mockReturnValue(video);
+    const firstBitmap = new OwnedBitmap();
+    const inFlightBitmap = new OwnedBitmap();
+    Object.defineProperty(globalThis, 'ImageBitmap', { configurable: true, value: OwnedBitmap });
+    Object.defineProperty(globalThis, 'createImageBitmap', {
+      configurable: true,
+      value: vi.fn()
+        .mockResolvedValueOnce(firstBitmap)
+        .mockResolvedValueOnce(inFlightBitmap),
+    });
+
+    let releaseFrame: (() => void) | undefined;
+    const frameBlocked = new Promise<void>((resolve) => { releaseFrame = resolve; });
+    const onFrame = vi.fn(async ({ frame }: { frame: number }) => {
+      if (frame === 1) await frameBlocked;
+    });
+    const onProgress = vi.fn();
+    const abort = new AbortController();
+    const processing = processVideoFile({
+      name: 'abort-in-flight.webm',
+      width: 640,
+      height: 360,
+      duration: 0.3,
+      fps: 10,
+      mimeType: 'video/webm',
+      url: 'blob:abort-in-flight',
+    }, { signal: abort.signal, onFrame, onProgress });
+
+    await vi.waitFor(() => expect(onFrame).toHaveBeenCalledTimes(2));
+    expect(firstBitmap.close).toHaveBeenCalledTimes(1);
+    abort.abort();
+    await expect(processing).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(requestFrame).toHaveBeenCalledTimes(1);
+    expect(inFlightBitmap.close).not.toHaveBeenCalled();
+
+    releaseFrame?.();
+    await vi.waitFor(() => expect(inFlightBitmap.close).toHaveBeenCalledTimes(1));
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(requestFrame).toHaveBeenCalledTimes(1);
   });
 });

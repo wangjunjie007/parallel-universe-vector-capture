@@ -60,7 +60,7 @@ const DEFAULT_FPS = 30;
 
 const capability = (state: 'available' | 'unavailable' | 'unknown', detail?: string) => ({ state, detail });
 
-function detectCapabilities(): CapabilitySnapshot {
+export function detectCapabilities(): CapabilitySnapshot {
   if (typeof window === 'undefined') {
     return {
       secureContext: capability('unknown'),
@@ -74,12 +74,21 @@ function detectCapabilities(): CapabilitySnapshot {
   const secure = window.isSecureContext || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
   const hasCamera = Boolean(navigator.mediaDevices?.getUserMedia);
   const hasWorker = typeof Worker !== 'undefined';
+  const hasWorkerFrameTransfer = typeof ImageBitmap !== 'undefined' && typeof createImageBitmap === 'function';
+  const hasWorkerInference = hasWorker && hasWorkerFrameTransfer;
   const hasWasm = typeof WebAssembly !== 'undefined';
   const hasVideoClock = typeof HTMLVideoElement !== 'undefined' && 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
   return {
     secureContext: capability(secure ? 'available' : 'unavailable', secure ? undefined : 'HTTPS required'),
     camera: capability(hasCamera ? 'available' : 'unavailable', hasCamera ? undefined : 'getUserMedia unavailable'),
-    workers: capability(hasWorker ? 'available' : 'unavailable'),
+    workers: capability(
+      hasWorkerInference ? 'available' : 'unavailable',
+      hasWorkerInference
+        ? undefined
+        : hasWorker
+          ? 'ImageBitmap transfer is unavailable; inference will use the main thread.'
+          : 'Worker is unavailable; inference will use the main thread.',
+    ),
     wasm: capability(hasWasm ? 'available' : 'unavailable'),
     videoFrameCallback: capability(hasVideoClock ? 'available' : 'unknown', hasVideoClock ? undefined : 'fallback available'),
     checkedAt: Date.now(),
@@ -196,7 +205,7 @@ function buildOverlay(frames: readonly SemanticFrame[], width: number, height: n
   return { width, height, hands: [...bySide.values()], semanticCount: current.count, isSample: false, sourceFrame: sourceFrame ?? current.frame, sourceTime: sourceTime ?? current.time };
 }
 
-function useLocalCaptureController(initialLanguage?: Language): CaptureUiController & {
+export function useLocalCaptureController(initialLanguage?: Language): CaptureUiController & {
   videoRef: RefObject<HTMLVideoElement>;
   updateVideoMetadata: (metadata: { width: number; height: number; duration?: number }) => void;
 } {
@@ -208,16 +217,38 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
   const inferenceRef = useRef<InferenceClient | null>(null);
   const inferenceInitRef = useRef<InferenceInitResult | null>(null);
   const inferenceInitPromiseRef = useRef<Promise<InferenceInitResult> | null>(null);
+  const inferenceModeRef = useRef<'realtime' | 'precise' | undefined>();
+  const inferenceGenerationRef = useRef(0);
   const trajectoryRef = useRef<TrajectoryStore>(createTrajectoryStore({ maxFrames: 60 * 60 * 60 }));
   const diagnosticsRef = useRef<DiagnosticsCollector>(new DiagnosticsCollector());
   const recordingRef = useRef<RecordingController | null>(null);
+  // Starting a recording may wait for camera permission/model setup. A newer
+  // mode, source, camera, or recording request must make that continuation a
+  // no-op before it can create a MediaRecorder for the wrong stream.
+  const recordingStartGenerationRef = useRef(0);
   const sourceMetadataRef = useRef<LocalVideoMetadata | undefined>();
+  // Guards asynchronous metadata/hash inspection when users replace a source
+  // before the previous file or recording has finished loading.
+  const sourceGenerationRef = useRef(0);
   const exportRef = useRef<BuiltExport | null>(null);
   const processingAbortRef = useRef<AbortController | null>(null);
+  // A separate run generation protects the shared trajectory/export refs from
+  // callbacks that were already in flight when a precise run was cancelled or
+  // replaced. Inference generation only scopes the model instance, not the
+  // source-processing transaction.
+  const processingGenerationRef = useRef(0);
   const liveBusyRef = useRef(false);
+  // A camera frame can still be resolving after the stream or inference
+  // client has been replaced. Keep its ownership explicit so late results
+  // cannot mutate a newer session or clear its busy flag.
+  const liveGenerationRef = useRef(0);
+  const liveInFlightRef = useRef<{ generation: number; client: InferenceClient; session: CameraSession } | null>(null);
+  const cameraRequestGenerationRef = useRef(0);
   const liveFrameRef = useRef(0);
   const liveWindowRef = useRef({ startedAt: 0, frames: 0 });
   const capabilityDiagnosticsRef = useRef<DiagnosticItem[]>([]);
+  const modeRef = useRef<CaptureMode>(snapshot.mode);
+  modeRef.current = snapshot.mode;
 
   const patchSnapshot = useCallback((patch: Partial<CaptureUiSnapshot> | ((current: CaptureUiSnapshot) => Partial<CaptureUiSnapshot>)) => {
     setSnapshot((current) => ({ ...current, ...(typeof patch === 'function' ? patch(current) : patch) }));
@@ -240,17 +271,57 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
     publishDiagnostics();
   }, [publishDiagnostics]);
 
+  // Inference can move from a Worker/GPU to the main-thread/CPU after the
+  // initial handshake. Consume those reasons at the controller boundary so
+  // the UI and the exported diagnostics package describe the actual path.
+  const syncInferenceProvenance = useCallback((client: InferenceClient, fallbackDelegate: InferenceInitResult['delegate'] = 'unknown', frame?: number, time?: number) => {
+    const actualDelegate = client.executionDelegate ?? fallbackDelegate;
+    patchSnapshot({ delegate: actualDelegate });
+    for (const reason of client.consumeFallbackReasons?.() ?? []) {
+      addDiagnostic({
+        code: reason.code,
+        severity: reason.phase === 'runtime' ? 'error' : 'warning',
+        message: reason.message,
+        frame,
+        time,
+        details: { phase: reason.phase, runtime: client.executionRuntime },
+      });
+    }
+    return actualDelegate;
+  }, [addDiagnostic, patchSnapshot]);
+
+  const invalidateLive = useCallback(() => {
+    liveGenerationRef.current += 1;
+    liveBusyRef.current = false;
+    liveInFlightRef.current = null;
+  }, []);
+
+  const invalidateRecordingStart = useCallback(() => {
+    recordingStartGenerationRef.current += 1;
+  }, []);
+
   const stopCamera = useCallback(() => {
+    invalidateRecordingStart();
+    cameraRequestGenerationRef.current += 1;
+    invalidateLive();
     cameraRef.current?.stop();
     cameraRef.current = null;
-    liveBusyRef.current = false;
     setVideoStream(null);
-  }, []);
+  }, [invalidateLive, invalidateRecordingStart]);
 
   const revokeVideoUrl = useCallback(() => {
     revokeSourceVideoUrl(sourceMetadataRef.current);
     sourceMetadataRef.current = undefined;
     setVideoUrl(undefined);
+  }, []);
+
+  const invalidateProcessing = useCallback(() => {
+    // Increment before aborting so synchronous abort listeners and already
+    // resolved callbacks observe the stale generation immediately.
+    processingGenerationRef.current += 1;
+    const abort = processingAbortRef.current;
+    processingAbortRef.current = null;
+    abort?.abort();
   }, []);
 
   const enumerateCameras = useCallback(async () => {
@@ -273,11 +344,20 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
     patchSnapshot({ capabilities, diagnostics: issues, phase: 'ready', errorMessage: undefined });
   }, [patchSnapshot]);
 
-  const ensureInference = useCallback(async (): Promise<InferenceInitResult> => {
-    if (inferenceInitRef.current && inferenceRef.current) return inferenceInitRef.current;
-    if (inferenceInitPromiseRef.current) return inferenceInitPromiseRef.current;
+  const ensureInference = useCallback(async (mode: 'realtime' | 'precise', forceReset = false): Promise<InferenceInitResult> => {
+    const sameMode = inferenceModeRef.current === mode;
+    if (!forceReset && sameMode && inferenceInitRef.current && inferenceRef.current) return inferenceInitRef.current;
+    if (!forceReset && sameMode && inferenceInitPromiseRef.current) return inferenceInitPromiseRef.current;
+
+    const generation = ++inferenceGenerationRef.current;
     const client = inferenceRef.current ?? new InferenceClient();
+    // A mode change or a new precise source must start with a fresh
+    // HandLandmarker VIDEO state. InferenceClient.dispose() also cancels any
+    // in-flight initialization before the replacement starts.
+    if (inferenceRef.current && (forceReset || !sameMode)) client.dispose();
     inferenceRef.current = client;
+    inferenceInitRef.current = null;
+    inferenceModeRef.current = mode;
     const promise = client.init({
       modelUrl: assetUrl('models/hand_landmarker.task'),
       wasmUrl: assetUrl('wasm'),
@@ -287,24 +367,38 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
       wasmNoSimdSha256: WASM_NOSIMD_SHA256,
       preferWorker: detectCapabilities().workers.state === 'available',
       preferGpu: true,
+      mode,
     }).then((result) => {
+      if (inferenceGenerationRef.current !== generation || inferenceRef.current !== client || inferenceModeRef.current !== mode) {
+        throw new Error('Inference initialization superseded');
+      }
       inferenceInitRef.current = result;
-      patchSnapshot({ modelVersion: result.modelVersion, delegate: result.delegate });
+      const actualDelegate = syncInferenceProvenance(client, result.delegate);
+      patchSnapshot({ modelVersion: result.modelVersion, delegate: actualDelegate });
       return result;
     }).catch((error) => {
-      client.dispose();
-      inferenceRef.current = null;
-      const message = error instanceof Error ? error.message : 'Hand model initialization failed.';
-      addDiagnostic({ code: 'model_init', severity: 'error', message });
+      if (inferenceGenerationRef.current === generation && inferenceRef.current === client) {
+        client.dispose();
+        inferenceRef.current = null;
+        inferenceInitRef.current = null;
+        inferenceModeRef.current = undefined;
+        const message = error instanceof Error ? error.message : 'Hand model initialization failed.';
+        addDiagnostic({ code: 'model_init', severity: 'error', message });
+      }
       throw error;
     }).finally(() => {
-      inferenceInitPromiseRef.current = null;
+      if (inferenceInitPromiseRef.current === promise) inferenceInitPromiseRef.current = null;
     });
     inferenceInitPromiseRef.current = promise;
     return promise;
-  }, [addDiagnostic, patchSnapshot]);
+  }, [addDiagnostic, patchSnapshot, syncInferenceProvenance]);
 
-  const appendOutput = useCallback((output: { frame: number; time: number; timestamp_us: number; width: number; height: number; candidates: RawFrame['hands']; inferenceMs: number; delegate: 'GPU' | 'CPU' | 'unknown' }, dropped = false, errors?: string[]) => {
+  const appendOutput = useCallback((
+    output: { frame: number; time: number; timestamp_us: number; width: number; height: number; candidates: RawFrame['hands']; inferenceMs: number; delegate: 'GPU' | 'CPU' | 'unknown' },
+    dropped = false,
+    errors?: string[],
+    failClosed = false,
+  ) => {
     const raw: RawFrame = {
       frame: output.frame,
       time: output.time,
@@ -319,8 +413,23 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
       semantic = trajectoryRef.current.appendRawFrame(raw);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Trajectory store rejected a frame.';
+      const reachedLimit = message.startsWith('trajectory_store_limit:');
+      const publicMessage = reachedLimit
+        ? 'Trajectory storage capacity was reached. Capture stopped because the partial result cannot be exported and needs review.'
+        : message;
       raw.flags = { ...raw.flags, needsReview: true, errors: [...(raw.flags?.errors ?? []), message] };
-      addDiagnostic({ code: 'trajectory_store', severity: 'error', message, frame: raw.frame, time: raw.time });
+      addDiagnostic({ code: reachedLimit ? 'trajectory_store_limit' : 'trajectory_store', severity: 'error', message: publicMessage, frame: raw.frame, time: raw.time });
+      if (reachedLimit) {
+        exportRef.current = null;
+        if (failClosed) throw (error instanceof Error ? error : new Error(message));
+        cameraRef.current?.stopFrames();
+        invalidateLive();
+        patchSnapshot((current) => ({
+          phase: 'error',
+          errorMessage: publicMessage,
+          export: { ...current.export, standardReady: false, diagnosticsReady: false, quality: 'error' },
+        }));
+      }
     }
     diagnosticsRef.current.recordInference(output.inferenceMs, dropped);
     diagnosticsRef.current.ingestRaw(raw);
@@ -337,60 +446,114 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
     }));
     publishDiagnostics();
     return semantic;
-  }, [addDiagnostic, patchSnapshot, publishDiagnostics]);
+  }, [addDiagnostic, invalidateLive, patchSnapshot, publishDiagnostics]);
 
-  const handleLiveFrame = useCallback(async (frame: { image: HTMLVideoElement; mediaTime: number; presentedFrames?: number; width: number; height: number }) => {
+  const handleLiveFrame = useCallback(async (
+    frame: { image: HTMLVideoElement; mediaTime: number; presentedFrames?: number; width: number; height: number },
+    generation: number,
+    session: CameraSession,
+  ) => {
+    if (generation !== liveGenerationRef.current || cameraRef.current !== session || inferenceModeRef.current !== 'realtime') return;
     if (liveBusyRef.current) {
       diagnosticsRef.current.recordInference(0, true);
       patchSnapshot((current) => ({ metrics: { ...current.metrics, droppedFrames: current.metrics.droppedFrames + 1 } }));
       return;
     }
     const client = inferenceRef.current;
-    if (!client || !inferenceInitRef.current) return;
+    const init = inferenceInitRef.current;
+    if (!client || !init) return;
+    const token = { generation, client, session };
     liveBusyRef.current = true;
+    liveInFlightRef.current = token;
+    const isCurrent = () => liveInFlightRef.current === token
+      && generation === liveGenerationRef.current
+      && cameraRef.current === session
+      && inferenceRef.current === client
+      && inferenceModeRef.current === 'realtime';
     const now = performance.now();
     if (!liveWindowRef.current.startedAt) liveWindowRef.current.startedAt = now;
     liveWindowRef.current.frames += 1;
     const frameNumber = typeof frame.presentedFrames === 'number' ? Math.max(0, frame.presentedFrames - 1) : liveFrameRef.current;
     liveFrameRef.current = Math.max(liveFrameRef.current + 1, frameNumber + 1);
+    const width = frame.width || videoRef.current?.videoWidth || DEFAULT_WIDTH;
+    const height = frame.height || videoRef.current?.videoHeight || DEFAULT_HEIGHT;
+    const timestamp_us = Math.round(frame.mediaTime * 1_000_000);
     try {
       const output = await client.process({
         frame: frameNumber,
         time: frame.mediaTime,
-        timestamp_us: Math.round(frame.mediaTime * 1_000_000),
-        width: frame.width || videoRef.current?.videoWidth || DEFAULT_WIDTH,
-        height: frame.height || videoRef.current?.videoHeight || DEFAULT_HEIGHT,
+        timestamp_us,
+        width,
+        height,
         image: frame.image,
       });
+      if (!isCurrent()) return;
+      const actualDelegate = syncInferenceProvenance(client, init.delegate, frameNumber, frame.mediaTime);
       if (!output) {
-        appendOutput({ frame: frameNumber, time: frame.mediaTime, timestamp_us: Math.round(frame.mediaTime * 1_000_000), width: frame.width, height: frame.height, candidates: [], inferenceMs: 0, delegate: inferenceInitRef.current.delegate }, true);
+        appendOutput({ frame: frameNumber, time: frame.mediaTime, timestamp_us, width, height, candidates: [], inferenceMs: 0, delegate: actualDelegate }, true);
       } else {
-        appendOutput(output);
+        appendOutput({ ...output, delegate: actualDelegate });
       }
       const elapsed = performance.now() - liveWindowRef.current.startedAt;
-      if (elapsed >= 1000) {
+      if (elapsed >= 1000 && isCurrent()) {
         const actualFps = liveWindowRef.current.frames * 1000 / elapsed;
         liveWindowRef.current = { startedAt: performance.now(), frames: 0 };
         patchSnapshot((current) => ({ metrics: { ...current.metrics, actualFps } }));
       }
     } catch (error) {
+      if (!isCurrent()) return;
       const message = error instanceof Error ? error.message : 'Live inference failed.';
-      appendOutput({ frame: frameNumber, time: frame.mediaTime, timestamp_us: Math.round(frame.mediaTime * 1_000_000), width: frame.width, height: frame.height, candidates: [], inferenceMs: 0, delegate: inferenceInitRef.current.delegate }, true, [message]);
+      const actualDelegate = syncInferenceProvenance(client, init.delegate, frameNumber, frame.mediaTime);
+      appendOutput({ frame: frameNumber, time: frame.mediaTime, timestamp_us, width, height, candidates: [], inferenceMs: 0, delegate: actualDelegate }, true, [message]);
       addDiagnostic({ code: 'live_inference', severity: 'error', message, frame: frameNumber, time: frame.mediaTime });
     } finally {
-      liveBusyRef.current = false;
+      if (liveInFlightRef.current === token) {
+        liveInFlightRef.current = null;
+        liveBusyRef.current = false;
+      }
     }
-  }, [addDiagnostic, appendOutput, patchSnapshot]);
+  }, [addDiagnostic, appendOutput, patchSnapshot, syncInferenceProvenance]);
 
   const startLiveFrames = useCallback(() => {
     const session = cameraRef.current;
     if (!session) return;
-    session.startFrames((frame) => { void handleLiveFrame(frame); });
+    invalidateLive();
+    trajectoryRef.current.clear();
+    diagnosticsRef.current.clear();
+    exportRef.current = null;
     liveFrameRef.current = 0;
     liveWindowRef.current = { startedAt: performance.now(), frames: 0 };
-  }, [handleLiveFrame]);
+    patchSnapshot((current) => ({
+      overlay: {
+        ...initialOverlay(),
+        width: current.source.width,
+        height: current.source.height,
+      },
+      metrics: {
+        ...current.metrics,
+        actualFps: undefined,
+        inferenceMs: undefined,
+        droppedFrames: 0,
+        processedFrames: 0,
+        totalFrames: undefined,
+        alignment: 'presentation_time_estimate',
+      },
+      export: { standardReady: false, diagnosticsReady: false, quality: 'pending' },
+      errorMessage: undefined,
+    }));
+    publishDiagnostics();
+    const generation = liveGenerationRef.current;
+    session.startFrames((frame) => { void handleLiveFrame(frame, generation, session); });
+  }, [handleLiveFrame, invalidateLive, patchSnapshot, publishDiagnostics]);
 
-  const requestCamera = useCallback(async (cameraIdOverride?: string) => {
+  const requestCamera = useCallback(async (cameraIdOverride?: string, recordingStartGeneration?: number) => {
+    if (recordingStartGeneration === undefined) invalidateRecordingStart();
+    else if (recordingStartGenerationRef.current !== recordingStartGeneration) return;
+    // Switching back to a live source invalidates any precise callbacks that
+    // may still be waiting on inference or decoder events.
+    invalidateProcessing();
+    invalidateLive();
+    const requestGeneration = ++cameraRequestGenerationRef.current;
     const capabilities = detectCapabilities();
     if (capabilities.secureContext.state === 'unavailable') {
       patchSnapshot({ permission: 'unsupported', phase: 'error', errorMessage: 'Secure context required', diagnostics: [diagnostic('secure-context', 'error', 'HTTPS is required', 'Camera access is blocked on insecure origins.')] });
@@ -401,59 +564,106 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
       return;
     }
     patchSnapshot({ permission: 'checking', phase: 'loading-model', errorMessage: undefined });
+    let session: CameraSession | undefined;
+    const isCurrentRequest = () => cameraRequestGenerationRef.current === requestGeneration
+      && cameraRef.current === session;
     try {
       const source = snapshot.source;
       if (source.kind === 'file' || source.kind === 'recording') revokeVideoUrl();
-      const session = cameraRef.current ?? new CameraSession(videoRef.current ?? undefined);
+      session = cameraRef.current ?? new CameraSession(videoRef.current ?? undefined);
       cameraRef.current = session;
+      const activeSession = session;
+      activeSession.setCallbacks({
+        onEnded: () => {
+          if (cameraRef.current !== activeSession) return;
+          invalidateProcessing();
+          invalidateLive();
+          ++sourceGenerationRef.current;
+          const recorder = recordingRef.current;
+          recordingRef.current = null;
+          if (recorder) void recorder.stop().catch(() => undefined);
+          stopCamera();
+          addDiagnostic({
+            code: 'camera_track_ended',
+            severity: 'error',
+            message: 'The camera track ended unexpectedly; capture was stopped and the session needs review.',
+          });
+          patchSnapshot({ phase: 'error', permission: 'granted', errorMessage: 'Camera track ended unexpectedly.' });
+        },
+      });
       // StageCanvas owns the visible mirror transform; keep the camera source untransformed
       // so the overlay and video cannot be mirrored twice.
-      session.setMirror(false);
-      const metadata = await session.request(cameraIdOverride ?? snapshot.selectedCameraId);
-      setVideoStream(session.mediaStream ?? null);
+      activeSession.setMirror(false);
+      const metadata = await activeSession.request(cameraIdOverride ?? snapshot.selectedCameraId);
+      if (!isCurrentRequest()) return;
+      setVideoStream(activeSession.mediaStream ?? null);
       const width = metadata.width || DEFAULT_WIDTH;
       const height = metadata.height || DEFAULT_HEIGHT;
-      const init = await ensureInference();
+      const init = await ensureInference('realtime');
+      if (!isCurrentRequest() || inferenceModeRef.current !== 'realtime') return;
+      const actualDelegate = inferenceRef.current?.executionDelegate ?? init.delegate;
       patchSnapshot((current) => ({
         permission: 'granted',
         phase: 'preview',
         mode: 'live',
-        source: { ...current.source, kind: 'camera', width, height, fps: metadata.frameRate ?? DEFAULT_FPS, name: 'camera', duration: undefined },
+        source: { ...current.source, kind: 'camera', width, height, fps: metadata.frameRate ?? DEFAULT_FPS, name: 'camera', duration: undefined, rotation: 0, orientationLabel: width >= height ? 'landscape' : 'portrait' },
         overlay: { ...current.overlay, width, height, hands: [], semanticCount: 0 },
         metrics: { ...current.metrics, alignment: 'presentation_time_estimate' },
         diagnostics: current.diagnostics.filter((item) => !['secure-context', 'camera-api', 'permission'].includes(item.id)),
         modelVersion: init.modelVersion,
-        delegate: init.delegate,
+        delegate: actualDelegate,
       }));
       await enumerateCameras();
+      if (!isCurrentRequest()) return;
       startLiveFrames();
     } catch (error) {
+      if (!isCurrentRequest()) return;
       const name = error instanceof DOMException ? error.name : 'UnknownError';
       const detail = cameraErrorMessage(error);
       const permission: PermissionState = name === 'NotAllowedError' ? 'denied' : 'unsupported';
       stopCamera();
-      patchSnapshot({ permission, phase: 'error', errorMessage: detail, diagnostics: [diagnostic('permission', name === 'NotAllowedError' ? 'warning' : 'error', 'Camera could not start', detail)] });
+      const permissionDiagnostic = diagnostic('permission', name === 'NotAllowedError' ? 'warning' : 'error', 'Camera could not start', detail);
+      patchSnapshot((current) => ({
+        permission,
+        phase: 'error',
+        errorMessage: detail,
+        // Keep model/WASM and runtime fallback diagnostics emitted while the
+        // request was awaiting inference initialization.
+        diagnostics: [...current.diagnostics.filter((item) => item.id !== permissionDiagnostic.id), permissionDiagnostic],
+      }));
     }
-  }, [ensureInference, enumerateCameras, patchSnapshot, revokeVideoUrl, snapshot.selectedCameraId, snapshot.source, startLiveFrames, stopCamera]);
+  }, [ensureInference, enumerateCameras, invalidateLive, invalidateProcessing, invalidateRecordingStart, patchSnapshot, revokeVideoUrl, snapshot.selectedCameraId, snapshot.source, startLiveFrames, stopCamera]);
 
   const startPreview = useCallback(async () => {
+    invalidateRecordingStart();
     if (cameraRef.current?.mediaStream) {
-      await ensureInference();
+      await ensureInference('realtime');
       patchSnapshot({ mode: 'live', phase: 'preview', errorMessage: undefined });
       startLiveFrames();
       return;
     }
     await requestCamera();
-  }, [ensureInference, patchSnapshot, requestCamera, startLiveFrames]);
+  }, [ensureInference, invalidateRecordingStart, patchSnapshot, requestCamera, startLiveFrames]);
 
   const startRecording = useCallback(async () => {
+    if (recordingRef.current || modeRef.current !== 'live') return;
+    const recordingStartGeneration = ++recordingStartGenerationRef.current;
     try {
-      if (!cameraRef.current?.mediaStream) await requestCamera();
-      const stream = cameraRef.current?.mediaStream;
+      if (!cameraRef.current?.mediaStream) await requestCamera(undefined, recordingStartGeneration);
+      if (recordingStartGenerationRef.current !== recordingStartGeneration || modeRef.current !== 'live' || recordingRef.current) return;
+      const session = cameraRef.current;
+      const stream = session?.mediaStream;
       if (!stream) throw new Error('Camera stream is unavailable.');
-      recordingRef.current = startRuntimeRecording(stream);
+      if (cameraRef.current !== session || session.mediaStream !== stream) return;
+      const recorder = startRuntimeRecording(stream);
+      if (recordingStartGenerationRef.current !== recordingStartGeneration || modeRef.current !== 'live' || cameraRef.current !== session || session.mediaStream !== stream) {
+        void recorder.stop().catch(() => undefined);
+        return;
+      }
+      recordingRef.current = recorder;
       patchSnapshot({ mode: 'live', phase: 'recording', errorMessage: undefined });
     } catch (error) {
+      if (recordingStartGenerationRef.current !== recordingStartGeneration || modeRef.current !== 'live') return;
       const message = error instanceof Error ? error.message : 'Recording failed.';
       addDiagnostic({ code: 'recorder', severity: 'error', message });
       patchSnapshot({ phase: 'error', errorMessage: message });
@@ -461,13 +671,28 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
   }, [addDiagnostic, patchSnapshot, requestCamera]);
 
   const stopRecording = useCallback(async () => {
+    invalidateRecordingStart();
+    invalidateProcessing();
+    // Stop accepting live frames as soon as the user ends the capture. The
+    // recorder may take a task or two to flush its final chunk, but those
+    // frames must not leak into the precise source that is being prepared.
+    invalidateLive();
+    cameraRef.current?.stopFrames();
+    const sourceGeneration = ++sourceGenerationRef.current;
     const recorder = recordingRef.current;
     recordingRef.current = null;
     if (!recorder) return;
     try {
       const blob = await recorder.stop();
+      // Release the camera before metadata inspection so a stalled decoder or
+      // a replacement source cannot keep the device open indefinitely.
+      if (sourceGenerationRef.current === sourceGeneration) stopCamera();
       const file = new File([blob], 'capture.webm', { type: blob.type || recorder.mimeType || 'video/webm' });
       const metadata = await inspectVideoFile(file);
+      if (sourceGenerationRef.current !== sourceGeneration) {
+        revokeSourceVideoUrl(metadata);
+        return;
+      }
       metadata.fps = snapshot.source.fps ?? DEFAULT_FPS;
       revokeVideoUrl();
       sourceMetadataRef.current = metadata;
@@ -483,22 +708,56 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
         errorMessage: undefined,
       }));
     } catch (error) {
+      if (sourceGenerationRef.current !== sourceGeneration) return;
+      stopCamera();
       const message = error instanceof Error ? error.message : 'Recording could not be prepared for precise processing.';
       addDiagnostic({ code: 'recording_prepare', severity: 'error', message });
       patchSnapshot({ phase: 'error', errorMessage: message });
     }
-  }, [addDiagnostic, patchSnapshot, revokeVideoUrl, snapshot.source.fps, stopCamera]);
+  }, [addDiagnostic, invalidateLive, invalidateProcessing, invalidateRecordingStart, patchSnapshot, revokeVideoUrl, snapshot.source.fps, stopCamera]);
 
   const importVideo = useCallback(async (file: File) => {
+    invalidateRecordingStart();
+    invalidateProcessing();
+    const sourceGeneration = ++sourceGenerationRef.current;
+    modeRef.current = 'precise';
+    const recorder = recordingRef.current;
+    recordingRef.current = null;
+    if (recorder) void recorder.stop().catch(() => undefined);
+    revokeVideoUrl();
+    stopCamera();
+    trajectoryRef.current.clear();
+    diagnosticsRef.current.clear();
+    exportRef.current = null;
+    patchSnapshot((current) => ({
+      mode: 'precise',
+      phase: 'checking',
+      source: { ...initialSource(), mirrored: current.source.mirrored },
+      overlay: initialOverlay(),
+      metrics: {
+        ...current.metrics,
+        actualFps: undefined,
+        inferenceMs: undefined,
+        alignment: 'unknown',
+        processedFrames: 0,
+        totalFrames: undefined,
+        droppedFrames: 0,
+      },
+      export: { standardReady: false, diagnosticsReady: false, quality: 'pending' },
+      diagnostics: capabilityDiagnosticsRef.current,
+      processProgress: undefined,
+      errorMessage: undefined,
+    }));
     if (!file.type.startsWith('video/') && !/\.(webm|mp4|m4v|mov|ogv)$/i.test(file.name)) {
       patchSnapshot({ phase: 'error', errorMessage: 'Unsupported video file', diagnostics: [diagnostic('decode', 'error', 'Unsupported video file', 'Choose a browser-decodable WebM or H.264 MP4.')] });
       return;
     }
     try {
-      processingAbortRef.current?.abort();
-      revokeVideoUrl();
-      stopCamera();
       const metadata = await inspectVideoFile(file);
+      if (sourceGenerationRef.current !== sourceGeneration) {
+        revokeSourceVideoUrl(metadata);
+        return;
+      }
       sourceMetadataRef.current = metadata;
       setVideoUrl(metadata.url);
       patchSnapshot((current) => ({
@@ -513,30 +772,59 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
         errorMessage: undefined,
       }));
     } catch (error) {
+      if (sourceGenerationRef.current !== sourceGeneration) return;
       const message = error instanceof Error ? error.message : 'Video could not be decoded.';
       addDiagnostic({ code: 'decode', severity: 'error', message });
-      patchSnapshot({ phase: 'error', errorMessage: message });
+      patchSnapshot({
+        phase: 'error',
+        errorMessage: message,
+        export: { standardReady: false, diagnosticsReady: false, quality: 'error' },
+      });
     }
-  }, [addDiagnostic, patchSnapshot, revokeVideoUrl, stopCamera]);
+  }, [addDiagnostic, invalidateProcessing, invalidateRecordingStart, patchSnapshot, revokeVideoUrl, stopCamera]);
 
   const processSource = useCallback(async () => {
     const metadata = sourceMetadataRef.current;
     if (!metadata || (snapshot.source.kind !== 'file' && snapshot.source.kind !== 'recording')) return;
-    if (processingAbortRef.current) processingAbortRef.current.abort();
+    const sourceSnapshot = {
+      metadata,
+      kind: snapshot.source.kind,
+      mirrored: snapshot.source.mirrored,
+      rotation: snapshot.source.rotation,
+      orientationLabel: snapshot.source.orientationLabel ?? 'identity',
+    } as const;
+    invalidateProcessing();
+    const sourceGeneration = ++sourceGenerationRef.current;
+    const generation = processingGenerationRef.current;
     const abort = new AbortController();
     processingAbortRef.current = abort;
+    // `isCurrentRun` deliberately checks controller identity as well as the
+    // monotonic generation. A cancelled run must not clear or overwrite the
+    // controller belonging to a newer source.
+    const isCurrentRun = () => processingGenerationRef.current === generation && processingAbortRef.current === abort;
+    const isWritable = () => isCurrentRun()
+      && !abort.signal.aborted
+      && sourceGenerationRef.current === sourceGeneration
+      && sourceMetadataRef.current === sourceSnapshot.metadata;
     trajectoryRef.current.clear();
     diagnosticsRef.current.clear();
     exportRef.current = null;
     publishDiagnostics();
     patchSnapshot({ phase: 'processing', processProgress: 0, errorMessage: undefined, metrics: { ...snapshot.metrics, processedFrames: 0, totalFrames: undefined, droppedFrames: 0, alignment: 'unknown' }, export: { ...snapshot.export, standardReady: false, diagnosticsReady: false, quality: 'pending' } });
     try {
-      const init = await ensureInference();
+      // Rebuild for every precise source, even when the previous source was
+      // also precise, so MediaPipe VIDEO tracking state cannot leak between
+      // files or a prior live preview.
+      const init = await ensureInference('precise', true);
+      if (!isWritable()) return;
+      const client = inferenceRef.current;
+      if (!client) throw new Error('Inference client is unavailable.');
       let processedFrames = 0;
       let totalFrames: number | undefined;
       const processResult = await processVideoFile(metadata, {
         signal: abort.signal,
         onProgress: ({ frame, processedFrames: reportedProcessed, sourceFrames, estimatedTotalFrames }) => {
+          if (!isWritable()) return;
           processedFrames = reportedProcessed;
           totalFrames = estimatedTotalFrames ?? totalFrames;
           const progress = totalFrames ? Math.min(100, (sourceFrames / totalFrames) * 100) : undefined;
@@ -547,6 +835,7 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
           if (frame === 0 || processedFrames % 30 === 0) publishDiagnostics();
         },
         onDecodeGap: (gap) => {
+          if (!isWritable()) return;
           appendOutput({
             frame: gap.frame,
             time: gap.mediaTime,
@@ -555,8 +844,9 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
             height: metadata.height,
             candidates: [],
             inferenceMs: 0,
-            delegate: inferenceInitRef.current?.delegate ?? init.delegate,
-          }, true, [gap.reason]);
+            delegate: syncInferenceProvenance(client, undefined, gap.frame, gap.mediaTime),
+          }, true, [gap.reason], true);
+          if (!isWritable()) return;
           const rawFrames = trajectoryRef.current.getRawFrames();
           const raw = rawFrames.at(-1);
           if (raw?.frame === gap.frame) raw.flags = { ...raw.flags, decodeGap: true, needsReview: true };
@@ -569,25 +859,44 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
           });
         },
         onFrame: async (frame) => {
+          if (!isWritable()) return;
           let output;
           try {
-            output = await inferenceRef.current?.process({ frame: frame.frame, time: frame.mediaTime, timestamp_us: frame.timestampUs, width: metadata.width, height: metadata.height, image: frame.image });
+            // Keep the client bound to this run. Looking it up from the ref
+            // after an await can route a late callback into a replacement
+            // source's model instance.
+            output = await client.process({ frame: frame.frame, time: frame.mediaTime, timestamp_us: frame.timestampUs, width: metadata.width, height: metadata.height, image: frame.image });
           } catch (error) {
+            if (!isWritable()) return;
             const message = error instanceof Error ? error.message : 'Precise inference failed.';
-            appendOutput({ frame: frame.frame, time: frame.mediaTime, timestamp_us: frame.timestampUs, width: metadata.width, height: metadata.height, candidates: [], inferenceMs: 0, delegate: inferenceInitRef.current?.delegate ?? init.delegate }, true, [message]);
+            const actualDelegate = syncInferenceProvenance(client, undefined, frame.frame, frame.mediaTime);
+            appendOutput({ frame: frame.frame, time: frame.mediaTime, timestamp_us: frame.timestampUs, width: metadata.width, height: metadata.height, candidates: [], inferenceMs: 0, delegate: actualDelegate }, true, [message], true);
             return;
           }
+          if (!isWritable()) return;
+          const actualDelegate = syncInferenceProvenance(client, undefined, frame.frame, frame.mediaTime);
           if (!output) {
-            appendOutput({ frame: frame.frame, time: frame.mediaTime, timestamp_us: frame.timestampUs, width: metadata.width, height: metadata.height, candidates: [], inferenceMs: 0, delegate: init.delegate }, true, ['Inference returned no frame.']);
+            appendOutput({ frame: frame.frame, time: frame.mediaTime, timestamp_us: frame.timestampUs, width: metadata.width, height: metadata.height, candidates: [], inferenceMs: 0, delegate: actualDelegate }, true, ['Inference returned no frame.'], true);
             return;
           }
-          appendOutput(output);
+          appendOutput({ ...output, delegate: actualDelegate }, false, undefined, true);
         },
       });
-      if (abort.signal.aborted) return;
+      if (!isWritable()) return;
+      const alignmentNeedsReview = processResult.alignment !== 'exact_source_frames' || processResult.method === 'seek-estimate';
+      if (alignmentNeedsReview) {
+        diagnosticsRef.current.add({
+          code: 'alignment_estimate',
+          severity: 'warning',
+          message: 'Frame timing was estimated from presentation or seek timing; reprocess with exact source-frame decoding before final compositing.',
+          details: { alignment: processResult.alignment, method: processResult.method },
+        });
+      }
       const semanticFrames = [...trajectoryRef.current.getSemanticFrames()];
       const rawFrames = [...trajectoryRef.current.getRawFrames()];
       const summary = trajectoryRef.current.summary();
+      const actualDelegate = syncInferenceProvenance(client);
+      const actualRuntime = client.executionRuntime ?? init.runtime;
       const diagnostics = diagnosticsRef.current.snapshot();
       const built = buildExport({
         appVersion: '0.1.0',
@@ -598,13 +907,13 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
         captureMode: 'precise',
         alignment: processResult.alignment,
         source: { name: metadata.name, width: metadata.width, height: metadata.height, fps: processResult.derivedFps ?? metadata.fps, durationSeconds: metadata.duration, timebase: '1/1000000', sha256: metadata.sha256 },
-        mirror: snapshot.source.mirrored,
-        rotationDegrees: snapshot.source.rotation,
-        orientationTransform: snapshot.source.orientationLabel ?? 'identity',
+        mirror: sourceSnapshot.mirrored,
+        rotationDegrees: sourceSnapshot.rotation,
+        orientationTransform: sourceSnapshot.orientationLabel,
         inferenceWidth: metadata.width,
         inferenceHeight: metadata.height,
-        delegate: init.delegate,
-        diagnostics: { ...diagnostics.quality, summary },
+        delegate: actualDelegate,
+        diagnostics: { ...diagnostics.quality, summary, inference_runtime: actualRuntime, inference_delegate: actualDelegate },
         transitions: { count: summary.transitions.length, events: summary.transitions },
         sourceFrameCount: processResult.sourceFrameCount,
         derivedFps: processResult.derivedFps,
@@ -613,8 +922,18 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
         fingertipSeries: trajectoryRef.current.fingertipSeries(),
         palmSeries: trajectoryRef.current.palmSeries(),
       });
+      if (!isWritable()) return;
       exportRef.current = built;
-      const quality = diagnostics.quality.needs_review || summary.needsReviewFrames > 0 || summary.identityAmbiguousFrames > 0 ? 'needs_review' : 'ready';
+      // Export-level quality also includes geometry validation. Keep the UI
+      // status aligned with the package manifest so an invalid portal hint
+      // cannot be presented as ready for compositing.
+      const quality = alignmentNeedsReview
+        || built.bundle.quality?.needs_review === true
+        || diagnostics.quality.needs_review
+        || summary.needsReviewFrames > 0
+        || summary.identityAmbiguousFrames > 0
+        ? 'needs_review'
+        : 'ready';
       patchSnapshot({
         phase: 'complete',
         processProgress: 100,
@@ -623,40 +942,57 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
       });
       publishDiagnostics();
     } catch (error) {
+      if (!isCurrentRun()) return;
       if (abort.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
         patchSnapshot({ phase: 'ready', processProgress: undefined });
         return;
       }
       const message = error instanceof Error ? error.message : 'Precise processing failed.';
-      addDiagnostic({ code: 'processing', severity: 'error', message });
-      patchSnapshot({ phase: 'error', errorMessage: message, processProgress: undefined, export: { ...snapshot.export, quality: 'error' } });
+      const reachedLimit = message.startsWith('trajectory_store_limit:');
+      const publicMessage = reachedLimit
+        ? 'Trajectory storage capacity was reached before all source frames were processed. The partial result cannot be exported and needs review.'
+        : message;
+      if (!reachedLimit) addDiagnostic({ code: 'processing', severity: 'error', message: publicMessage });
+      exportRef.current = null;
+      patchSnapshot({
+        phase: 'error',
+        errorMessage: publicMessage,
+        processProgress: undefined,
+        export: { standardReady: false, diagnosticsReady: false, quality: 'error' },
+      });
     } finally {
-      if (processingAbortRef.current === abort) processingAbortRef.current = null;
+      if (isCurrentRun()) processingAbortRef.current = null;
     }
-  }, [addDiagnostic, appendOutput, ensureInference, patchSnapshot, processVideoFile, publishDiagnostics, snapshot.export, snapshot.metrics, snapshot.source]);
+  }, [addDiagnostic, appendOutput, ensureInference, invalidateProcessing, patchSnapshot, processVideoFile, publishDiagnostics, snapshot.export, snapshot.metrics, snapshot.source]);
 
   const cancelProcessing = useCallback(() => {
-    processingAbortRef.current?.abort();
-    processingAbortRef.current = null;
+    invalidateProcessing();
+    invalidateRecordingStart();
+    ++sourceGenerationRef.current;
     patchSnapshot({ phase: 'ready', processProgress: undefined });
-  }, [patchSnapshot]);
+  }, [invalidateProcessing, invalidateRecordingStart, patchSnapshot]);
 
   const clearSession = useCallback(() => {
-    processingAbortRef.current?.abort();
-    processingAbortRef.current = null;
+    invalidateRecordingStart();
+    invalidateProcessing();
+    ++sourceGenerationRef.current;
     const recorder = recordingRef.current;
     recordingRef.current = null;
-    if (recorder) void recorder.stop();
+    if (recorder) void recorder.stop().catch(() => undefined);
     stopCamera();
+    ++inferenceGenerationRef.current;
     revokeVideoUrl();
     inferenceRef.current?.dispose();
     inferenceRef.current = null;
     inferenceInitRef.current = null;
+    inferenceInitPromiseRef.current = null;
+    inferenceModeRef.current = undefined;
     diagnosticsRef.current.clear();
     trajectoryRef.current.clear();
     exportRef.current = null;
+    modeRef.current = 'live';
     setSnapshot(initialSnapshot(snapshot.language));
-  }, [revokeVideoUrl, snapshot.language, stopCamera]);
+  }, [invalidateProcessing, invalidateRecordingStart, revokeVideoUrl, snapshot.language, stopCamera]);
 
   const toggleMirror = useCallback(() => {
     patchSnapshot((current) => {
@@ -667,15 +1003,76 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
   }, [patchSnapshot]);
 
   const selectCamera = useCallback(async (cameraId: string) => {
+    invalidateRecordingStart();
     patchSnapshot({ selectedCameraId: cameraId });
+    if (recordingRef.current) {
+      // A MediaRecorder cannot be retargeted to a new track safely. Finalize
+      // the current local recording and leave the selected device queued for
+      // the next live session.
+      await stopRecording();
+      return;
+    }
     if (cameraRef.current?.mediaStream) {
       await requestCamera(cameraId);
     }
-  }, [patchSnapshot, requestCamera]);
+  }, [invalidateRecordingStart, patchSnapshot, requestCamera, stopRecording]);
 
   const setMode = useCallback((mode: CaptureMode) => {
-    patchSnapshot({ mode });
-  }, [patchSnapshot]);
+    if (mode === snapshot.mode) return;
+    modeRef.current = mode;
+    // A live recording is already the best precise-mode source. Finalize it
+    // through the normal metadata/hash path instead of dropping the blob.
+    if (mode === 'precise' && recordingRef.current) {
+      invalidateRecordingStart();
+      patchSnapshot({ mode: 'precise', phase: 'checking', errorMessage: undefined });
+      void stopRecording();
+      return;
+    }
+    invalidateProcessing();
+    invalidateRecordingStart();
+    ++sourceGenerationRef.current;
+    invalidateLive();
+    const recorder = recordingRef.current;
+    recordingRef.current = null;
+    if (recorder) {
+      // This branch is defensive for a recorder that outlives the live mode;
+      // never leave a MediaRecorder rejection as an unhandled promise.
+      void recorder.stop().catch((error) => {
+        const message = error instanceof Error ? error.message : 'Recording could not be stopped.';
+        addDiagnostic({ code: 'recorder_stop', severity: 'warning', message });
+      });
+    }
+    stopCamera();
+    ++inferenceGenerationRef.current;
+    inferenceRef.current?.dispose();
+    inferenceRef.current = null;
+    inferenceInitRef.current = null;
+    inferenceInitPromiseRef.current = null;
+    inferenceModeRef.current = undefined;
+    revokeVideoUrl();
+    trajectoryRef.current.clear();
+    diagnosticsRef.current.clear();
+    exportRef.current = null;
+    patchSnapshot((current) => ({
+      mode,
+      phase: 'ready',
+      source: { ...initialSource(), mirrored: current.source.mirrored },
+      overlay: initialOverlay(),
+      metrics: {
+        ...current.metrics,
+        actualFps: undefined,
+        inferenceMs: undefined,
+        droppedFrames: 0,
+        processedFrames: 0,
+        totalFrames: undefined,
+        alignment: mode === 'live' ? 'presentation_time_estimate' : 'unknown',
+      },
+      diagnostics: capabilityDiagnosticsRef.current,
+      export: { standardReady: false, diagnosticsReady: false, quality: 'pending' },
+      processProgress: undefined,
+      errorMessage: undefined,
+    }));
+  }, [addDiagnostic, invalidateLive, invalidateProcessing, invalidateRecordingStart, patchSnapshot, revokeVideoUrl, snapshot.mode, stopCamera, stopRecording]);
 
   const setLanguage = useCallback((language: Language) => {
     patchSnapshot({ language });
@@ -712,18 +1109,24 @@ function useLocalCaptureController(initialLanguage?: Language): CaptureUiControl
   useEffect(() => {
     checkCapabilities();
     return () => {
-      processingAbortRef.current?.abort();
+      invalidateProcessing();
+      invalidateLive();
+      ++sourceGenerationRef.current;
       const recorder = recordingRef.current;
       recordingRef.current = null;
-      if (recorder) void recorder.stop();
+      if (recorder) void recorder.stop().catch(() => undefined);
       cameraRef.current?.stop();
       cameraRef.current = null;
+      ++inferenceGenerationRef.current;
       inferenceRef.current?.dispose();
       inferenceRef.current = null;
+      inferenceInitPromiseRef.current = null;
+      inferenceInitRef.current = null;
+      inferenceModeRef.current = undefined;
       revokeSourceVideoUrl(sourceMetadataRef.current);
       sourceMetadataRef.current = undefined;
     };
-  }, [checkCapabilities]);
+  }, [checkCapabilities, invalidateProcessing]);
 
   const actions: CaptureUiActions = useMemo(() => ({
     checkCapabilities,

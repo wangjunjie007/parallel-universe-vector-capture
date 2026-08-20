@@ -76,6 +76,10 @@ function mediaError(video: HTMLVideoElement, fallback: string): Error {
 
 function waitForMediaEvent(target: HTMLVideoElement, event: 'loadedmetadata' | 'loadeddata' | 'seeked', signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
     const onEvent = () => { cleanup(); resolve(); };
     const onError = () => { cleanup(); reject(mediaError(target, 'Video could not be decoded')); };
     const onAbort = () => { cleanup(); reject(abortError()); };
@@ -88,6 +92,13 @@ function waitForMediaEvent(target: HTMLVideoElement, event: 'loadedmetadata' | '
     target.addEventListener('error', onError, { once: true });
     signal?.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+function releaseVideoElement(video: HTMLVideoElement): void {
+  try { video.pause(); } catch { /* best-effort decoder cleanup */ }
+  try { video.srcObject = null; } catch { /* srcObject may be read-only in older browsers */ }
+  try { video.removeAttribute('src'); } catch { /* detached element */ }
+  try { video.load(); } catch { /* cleanup must not mask the processing error */ }
 }
 
 function median(values: number[]): number | undefined {
@@ -146,13 +157,30 @@ export async function inspectVideoFile(file: File): Promise<LocalVideoMetadata> 
   const video = document.createElement('video');
   video.preload = 'metadata';
   video.muted = true;
-  const ready = waitForMediaEvent(video, 'loadedmetadata');
-  video.src = url;
-  video.load();
+  let retainUrl = false;
   try {
-    await ready;
-    if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error('Video has no readable duration');
-    if (!video.videoWidth || !video.videoHeight) throw new Error('Video has no readable dimensions');
+    let duration = 0;
+    let width = 0;
+    let height = 0;
+    const inspection = new AbortController();
+    try {
+      const ready = waitForMediaEvent(video, 'loadedmetadata', inspection.signal);
+      // If setting/loading the source throws synchronously, the finally block
+      // aborts this waiter. Attach a handler now so that cleanup cannot create
+      // an unhandled rejection before the original load error is propagated.
+      void ready.catch(() => undefined);
+      video.src = url;
+      video.load();
+      await ready;
+      if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error('Video has no readable duration');
+      if (!video.videoWidth || !video.videoHeight) throw new Error('Video has no readable dimensions');
+      duration = video.duration;
+      width = video.videoWidth;
+      height = video.videoHeight;
+    } finally {
+      inspection.abort();
+      releaseVideoElement(video);
+    }
     let sha256: string | undefined;
     try {
       // A full-file digest is useful for reproducibility, but avoid a second
@@ -163,19 +191,22 @@ export async function inspectVideoFile(file: File): Promise<LocalVideoMetadata> 
     } catch {
       sha256 = undefined;
     }
-    return {
+    const metadata = {
       name: file.name,
-      width: video.videoWidth,
-      height: video.videoHeight,
-      duration: video.duration,
+      width,
+      height,
+      duration,
       mimeType: file.type || 'video/*',
       url,
       file,
       sha256,
     };
-  } catch (error) {
-    URL.revokeObjectURL(url);
-    throw error;
+    retainUrl = true;
+    return metadata;
+  } finally {
+    // A successful inspection transfers URL ownership to LocalVideoMetadata;
+    // every failure path retains ownership here and must revoke it.
+    if (!retainUrl) URL.revokeObjectURL(url);
   }
 }
 
@@ -542,20 +573,32 @@ export async function processVideoFile(metadata: LocalVideoMetadata, options: Pr
   video.preload = 'auto';
   video.muted = true;
   video.playsInline = true;
-  const metadataReady = waitForMediaEvent(video, 'loadedmetadata', options.signal);
-  video.src = metadata.url;
-  video.load();
-  await metadataReady;
-  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) await waitForMediaEvent(video, 'loadeddata', options.signal);
+  // One internal signal owns every event waiter created for this temporary
+  // element. Aborting it in finally removes listeners even when assigning src
+  // or load() throws synchronously.
+  const lifecycle = new AbortController();
+  const relayAbort = () => lifecycle.abort();
+  if (options.signal?.aborted) lifecycle.abort();
+  else options.signal?.addEventListener('abort', relayAbort, { once: true });
+  const scopedOptions: ProcessVideoOptions = { ...options, signal: lifecycle.signal };
   try {
-    if (typeof video.requestVideoFrameCallback === 'function' && canSnapshotPresentedFrame()) {
-      return await processWithRvfc(video, metadata, options);
-    }
-    return await processWithSeekFallback(video, metadata, options);
-  } finally {
-    video.pause();
-    video.removeAttribute('src');
+    if (lifecycle.signal.aborted) throw abortError();
+    const metadataReady = waitForMediaEvent(video, 'loadedmetadata', lifecycle.signal);
+    void metadataReady.catch(() => undefined);
+    video.src = metadata.url;
     video.load();
+    await metadataReady;
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      await waitForMediaEvent(video, 'loadeddata', lifecycle.signal);
+    }
+    if (typeof video.requestVideoFrameCallback === 'function' && canSnapshotPresentedFrame()) {
+      return await processWithRvfc(video, metadata, scopedOptions);
+    }
+    return await processWithSeekFallback(video, metadata, scopedOptions);
+  } finally {
+    lifecycle.abort();
+    options.signal?.removeEventListener('abort', relayAbort);
+    releaseVideoElement(video);
   }
 }
 

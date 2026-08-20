@@ -14,6 +14,7 @@ import type {
   TrackingConfig,
 } from '../core/types';
 import { DEFAULT_TRACKING_CONFIG, pointId } from '../core/types';
+import { summarizeGeometryHints } from '../core/exportTypes';
 
 export interface ExportBuildOptions {
   appVersion: string;
@@ -71,7 +72,14 @@ function strictSemanticFrames(frames: SemanticFrame[]): SemanticTracksFile['fram
 }
 
 function sourceFrameCount(frames: SemanticFrame[], rawFrames: RawFrame[], requested?: number): number {
-  const maxObserved = Math.max(-1, ...frames.map((frame) => frame.frame), ...rawFrames.map((frame) => frame.frame)) + 1;
+  let highestObserved = -1;
+  for (const frame of frames) {
+    if (frame.frame > highestObserved) highestObserved = frame.frame;
+  }
+  for (const frame of rawFrames) {
+    if (frame.frame > highestObserved) highestObserved = frame.frame;
+  }
+  const maxObserved = highestObserved + 1;
   return Math.max(0, requested ?? 0, maxObserved);
 }
 
@@ -85,12 +93,16 @@ function buildFingertips(frames: SemanticFrame[], trajectory: ExportTrajectoryDa
     for (const point of frame.extendedPoints) {
       const key = pointId(point);
       (tracks[key] ??= []).push({
-        ...point,
+        side: point.side,
+        finger: point.finger,
+        x: point.x,
+        y: point.y,
         frame: frame.frame,
         time: frame.time,
         timestamp_us: frame.timestamp_us,
         interpolated: frame.flags.interpolated,
-        compressed: frame.state === 'pinch',
+        ...(point.compressed === undefined ? {} : { compressed: point.compressed }),
+        ...(point.releaseBlend === undefined ? {} : { releaseBlend: point.releaseBlend }),
         quality: frame.flags.needsReview ? 0 : 1,
       });
     }
@@ -230,6 +242,9 @@ export function buildExport(
   const diagnostics_ndjson = ndjson([
     ...(options.diagnosticEvents ?? []),
     ...rawFrames.flatMap((frame) => frame.flags ? [{ frame: frame.frame, time: frame.time, type: 'raw_flags', flags: frame.flags }] : []),
+    ...geometryFrames.flatMap((hint) => (!hint.quality.valid || hint.quality.warnings.length > 0)
+      ? [{ frame: hint.frame, time: hint.time, type: 'geometry_flags', flags: hint.quality }]
+      : []),
     ...semanticFrames.flatMap((frame) => [
       ...frame.transitions.map((transition) => ({ ...transition, frame: frame.frame })),
       ...(frame.flags.needsReview || frame.flags.longGap || frame.flags.errors?.length
@@ -243,16 +258,22 @@ export function buildExport(
   ]);
   const allFingertips = Object.values(fingertip_tracks.tracks).flat();
   const missingSamples = allFingertips.filter((sample) => sample.missing || sample.x === null || sample.y === null).length;
+  const geometryQuality = summarizeGeometryHints(geometryFrames);
   const quality = {
-    needs_review: rawFrames.some((frame) => frame.flags?.needsReview || frame.flags?.identityAmbiguous || frame.flags?.decodeGap)
+    // A seek-based or gap-containing replay has a useful presentation timeline,
+    // but it is not proof of exact source-frame alignment for compositing.
+    needs_review: options.alignment !== 'exact_source_frames'
+      || rawFrames.some((frame) => frame.flags?.needsReview || frame.flags?.identityAmbiguous || frame.flags?.decodeGap)
       || semanticFrames.some((frame) => frame.flags.needsReview || frame.flags.longGap)
-      || missingSamples > 0,
+      || missingSamples > 0
+      || !geometryQuality.geometry_valid,
     dropped_frames: rawFrames.filter((frame) => frame.flags?.dropped).length,
     decode_gap_frames: rawFrames.filter((frame) => frame.flags?.decodeGap).length,
     identity_ambiguous_frames: ambiguousFrames.size,
     long_gap_frames: semanticFrames.filter((frame) => frame.flags.longGap).length + allFingertips.filter((sample) => sample.longGap).length,
     missing_samples: missingSamples,
     source_frame_count: frameCount,
+    ...geometryQuality,
   };
   manifest.quality = { ...manifest.quality, ...quality };
   const bundle: ExportBundle = {

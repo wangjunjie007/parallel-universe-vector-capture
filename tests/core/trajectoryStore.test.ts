@@ -15,6 +15,37 @@ describe('TrajectoryStore', () => {
     expect(samples.find((point) => point.frame === 1)?.x).toBeCloseTo(110);
   });
 
+  it('carries pinch metadata through observations and short-gap interpolation', () => {
+    const store = createTrajectoryStore({ shortGapFrames: 1 });
+    const first = makeSemanticPointFrame(0, 4);
+    const second = makeSemanticPointFrame(2, 4);
+    first.extendedPoints = first.extendedPoints.map((point) => ({ ...point, compressed: true, releaseBlend: 0 }));
+    second.extendedPoints = second.extendedPoints.map((point) => ({ ...point, compressed: false, releaseBlend: 1 }));
+    store.appendSemanticFrame(first);
+    store.appendSemanticFrame(second);
+
+    const samples = store.fingertipSeries()['hand_1:thumb'];
+    expect(samples).toHaveLength(3);
+    expect(samples[0]).toMatchObject({ compressed: true, releaseBlend: 0 });
+    expect(samples[1]).toMatchObject({ interpolated: true, compressed: false, releaseBlend: 0.5 });
+    expect(samples[2]).toMatchObject({ compressed: false, releaseBlend: 1 });
+  });
+
+  it('does not fabricate pinch metadata across a long gap', () => {
+    const store = createTrajectoryStore({ shortGapFrames: 1 });
+    const first = makeSemanticPointFrame(0, 4);
+    const second = makeSemanticPointFrame(3, 4);
+    first.extendedPoints = first.extendedPoints.map((point) => ({ ...point, compressed: true, releaseBlend: 0 }));
+    second.extendedPoints = second.extendedPoints.map((point) => ({ ...point, compressed: false, releaseBlend: 1 }));
+    store.appendSemanticFrame(first);
+    store.appendSemanticFrame(second);
+
+    const samples = store.fingertipSeries()['hand_1:thumb'];
+    expect(samples[1]).toMatchObject({ missing: true, longGap: true, x: null, y: null });
+    expect(samples[1]).not.toHaveProperty('compressed');
+    expect(samples[1]).not.toHaveProperty('releaseBlend');
+  });
+
   it('keeps raw and semantic layers separate and can clear all session resources', () => {
     const store = createTrajectoryStore({ maxFrames: 2 });
     const raw = {
@@ -64,5 +95,14 @@ describe('TrajectoryStore', () => {
     };
     rawStore.appendRawFrame(raw);
     expect(() => rawStore.appendRawFrame(raw)).toThrow('trajectory_store_limit');
+  });
+
+  it('summarizes long sessions without spreading frame indexes into Math.max', () => {
+    const store = createTrajectoryStore();
+    const internal = store as unknown as { rawFrames: Array<{ frame: number }> };
+    const frameCount = 130_000;
+    for (let frame = 0; frame < frameCount; frame += 1) internal.rawFrames.push({ frame });
+
+    expect(store.summary().frameCount).toBe(frameCount);
   });
 });

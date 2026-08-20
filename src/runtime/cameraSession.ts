@@ -23,6 +23,16 @@ export interface CameraFrame {
   height: number;
 }
 
+/** Lifecycle of the media stream itself (independent from the frame callback loop). */
+export type CameraSessionState = 'idle' | 'requesting' | 'running' | 'ended' | 'stopped';
+
+export interface CameraSessionCallbacks {
+  /** Called when the active video track ends outside of an explicit stop(). */
+  onEnded?: (event: Event) => void;
+  /** Called after a lifecycle transition. The callback is never called for a no-op transition. */
+  onStateChange?: (state: CameraSessionState, previousState: CameraSessionState) => void;
+}
+
 type VideoFrameCallback = VideoFrameRequestCallback;
 
 export function checkCameraCapabilities(): CameraCapabilities {
@@ -53,9 +63,17 @@ export class CameraSession {
   private callbackHandle: number | undefined;
   private running = false;
   private mirror = true;
+  private lifecycleState: CameraSessionState = 'idle';
+  private callbacks: CameraSessionCallbacks;
+  // getUserMedia cannot be cancelled. A generation check makes a late result
+  // harmless and ensures an old camera cannot replace a newer selection.
+  private requestGeneration = 0;
+  private activeTrack: MediaStreamTrack | undefined;
+  private activeTrackEndedListener: ((event: Event) => void) | undefined;
 
-  constructor(video?: HTMLVideoElement) {
+  constructor(video?: HTMLVideoElement, callbacks: CameraSessionCallbacks = {}) {
     this.video = video ?? document.createElement('video');
+    this.callbacks = { ...callbacks };
     this.video.autoplay = true;
     this.video.muted = true;
     this.video.playsInline = true;
@@ -64,6 +82,74 @@ export class CameraSession {
 
   get mediaStream(): MediaStream | undefined { return this.stream; }
   get isMirrored(): boolean { return this.mirror; }
+  get state(): CameraSessionState { return this.lifecycleState; }
+
+  /** Replace observers without replacing the underlying media session. */
+  setCallbacks(callbacks: CameraSessionCallbacks = {}): void {
+    this.callbacks = { ...callbacks };
+  }
+
+  private setState(next: CameraSessionState): void {
+    if (next === this.lifecycleState) return;
+    const previous = this.lifecycleState;
+    this.lifecycleState = next;
+    try {
+      this.callbacks.onStateChange?.(next, previous);
+    } catch {
+      // An observer must not break camera cleanup or cause request() to fail.
+    }
+  }
+
+  private detachTrackListener(): void {
+    const track = this.activeTrack;
+    const listener = this.activeTrackEndedListener;
+    if (track && listener && typeof track.removeEventListener === 'function') {
+      track.removeEventListener('ended', listener);
+    }
+    this.activeTrack = undefined;
+    this.activeTrackEndedListener = undefined;
+  }
+
+  private stopStream(stream: MediaStream | undefined): void {
+    if (!stream) return;
+    for (const track of stream.getTracks()) {
+      try { track.stop(); } catch { /* a partially detached device may already be stopped */ }
+    }
+  }
+
+  private clearActiveStream(): void {
+    const stream = this.stream;
+    this.detachTrackListener();
+    this.stream = undefined;
+    // Do not let a late play() continuation clear a stream belonging to a new
+    // request. At this point the session owns the element, so clearing it is safe.
+    this.video.pause();
+    this.video.srcObject = null;
+    this.stopStream(stream);
+  }
+
+  private handleTrackEnded(stream: MediaStream, track: MediaStreamTrack, generation: number, event: Event): void {
+    // A stale track can still dispatch an event after stop() in some browsers.
+    // Check all three identities before publishing it to the application.
+    if (generation !== this.requestGeneration || this.stream !== stream || this.activeTrack !== track) return;
+    this.stopFrames();
+    this.setState('ended');
+    try {
+      this.callbacks.onEnded?.(event);
+    } catch {
+      // Keep the session state authoritative even if a UI observer throws.
+    }
+  }
+
+  private attachTrackListener(stream: MediaStream, track: MediaStreamTrack, generation: number): void {
+    this.detachTrackListener();
+    const listener = (event: Event) => this.handleTrackEnded(stream, track, generation, event);
+    this.activeTrack = track;
+    this.activeTrackEndedListener = listener;
+    if (typeof track.addEventListener === 'function') {
+      track.addEventListener('ended', listener);
+    }
+  }
 
   setMirror(value: boolean): void {
     this.mirror = value;
@@ -79,25 +165,83 @@ export class CameraSession {
   }
 
   async request(deviceId?: string): Promise<CameraMetadata> {
+    // Invalidate any unresolved getUserMedia call immediately. The browser
+    // does not expose cancellation for that promise, so every new request
+    // must advance the generation even when capability validation fails.
+    const generation = ++this.requestGeneration;
     const capabilities = checkCameraCapabilities();
     if (!capabilities.secureContext) throw new DOMException('Camera access requires HTTPS', 'SecurityError');
     if (!capabilities.camera) throw new DOMException('Camera API unavailable', 'NotSupportedError');
-    this.stop();
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        deviceId: deviceId ? { exact: deviceId } : undefined,
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 30, max: 60 },
-        facingMode: deviceId ? undefined : 'user',
-      },
-    });
+
+    // Invalidate and clean up the previous stream without emitting an
+    // intermediate `stopped` state. The caller observes the new request as one
+    // continuous transition: requesting -> running (or idle on failure).
+    this.stopFrames();
+    this.clearActiveStream();
+    this.setState('requesting');
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30, max: 60 },
+          facingMode: deviceId ? undefined : 'user',
+        },
+      });
+    } catch (error) {
+      if (generation !== this.requestGeneration) throw new DOMException('Camera request superseded', 'AbortError');
+      this.setState('idle');
+      throw error;
+    }
+
+    if (generation !== this.requestGeneration) {
+      this.stopStream(stream);
+      throw new DOMException('Camera request superseded', 'AbortError');
+    }
+
+    // Assign before awaiting play() so an explicit stop() during play can
+    // release this stream as well.
     this.stream = stream;
     this.video.srcObject = stream;
-    await this.video.play();
+    try {
+      await this.video.play();
+    } catch (error) {
+      if (generation !== this.requestGeneration) {
+        if (this.stream === stream) this.clearActiveStream();
+        // A superseding request may already have detached and stopped this
+        // stream. Do not call track.stop() a second time in that case.
+        throw new DOMException('Camera request superseded', 'AbortError');
+      }
+      if (this.stream === stream) this.clearActiveStream();
+      this.setState('idle');
+      throw error;
+    }
+
+    if (generation !== this.requestGeneration || this.stream !== stream) {
+      if (this.stream === stream) this.clearActiveStream();
+      // If the stream is no longer active, the request that replaced it owns
+      // its cleanup and has already stopped its tracks.
+      throw new DOMException('Camera request superseded', 'AbortError');
+    }
+
     const track = stream.getVideoTracks()[0];
-    track?.addEventListener('ended', () => { this.running = false; });
+    if (track) {
+      this.attachTrackListener(stream, track, generation);
+      // A track can end while play() is settling, before the listener is
+      // attached. Observe readyState so that transition is not lost.
+      if (track.readyState === 'ended') {
+        this.handleTrackEnded(stream, track, generation, new Event('ended'));
+        // Do not report a successfully initialized camera after its only
+        // video track has already ended. Callers would otherwise continue
+        // into model setup and start a frame loop with a dead source.
+        throw new DOMException('Camera track ended unexpectedly', 'NotReadableError');
+      }
+    }
+    this.setState('running');
     const settings = track?.getSettings();
     return {
       width: this.video.videoWidth || settings?.width || 0,
@@ -149,10 +293,9 @@ export class CameraSession {
   }
 
   stop(): void {
+    ++this.requestGeneration;
     this.stopFrames();
-    this.video.pause();
-    this.video.srcObject = null;
-    this.stream?.getTracks().forEach((track) => track.stop());
-    this.stream = undefined;
+    this.clearActiveStream();
+    this.setState('stopped');
   }
 }

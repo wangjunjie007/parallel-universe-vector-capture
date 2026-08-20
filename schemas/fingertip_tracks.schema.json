@@ -16,7 +16,7 @@
         "side": { "enum": ["hand_1", "hand_2"] }, "finger": { "enum": ["thumb", "index", "middle", "ring", "little"] },
         "x": { "type": ["number", "null"] }, "y": { "type": ["number", "null"] }, "frame": { "type": "integer", "minimum": 0 },
         "time": { "type": "number", "minimum": 0 }, "timestamp_us": { "type": "integer", "minimum": 0 },
-        "interpolated": { "type": "boolean" }, "compressed": { "type": "boolean" }, "quality": { "type": "number", "minimum": 0, "maximum": 1 },
+        "interpolated": { "type": "boolean" }, "compressed": { "type": "boolean" }, "releaseBlend": { "type": "number", "minimum": 0, "maximum": 1 }, "quality": { "type": "number", "minimum": 0, "maximum": 1 },
         "missing": { "type": "boolean" }, "longGap": { "type": "boolean" }
       }
     }

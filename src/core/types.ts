@@ -116,6 +116,16 @@ export interface SemanticPoint {
   y: number;
 }
 
+/**
+ * Pinch correction metadata belongs only to the extended trajectory layer.
+ * `releaseBlend` is the measured-tip weight: 0 is fully compressed and 1 is
+ * the unmodified detector position.
+ */
+export interface ExtendedSemanticPoint extends SemanticPoint {
+  compressed?: boolean;
+  releaseBlend?: number;
+}
+
 export interface PalmSample {
   side: HandId;
   x: number;
@@ -141,6 +151,7 @@ export interface FingerSample {
   timestamp_us: number;
   interpolated?: boolean;
   compressed?: boolean;
+  releaseBlend?: number;
   quality?: number;
   missing?: boolean;
   longGap?: boolean;
@@ -183,7 +194,7 @@ export interface SemanticFrame {
   state: GestureState;
   count: 0 | 4 | 10;
   points: SemanticPoint[];
-  extendedPoints: SemanticPoint[];
+  extendedPoints: ExtendedSemanticPoint[];
   palms: PalmSample[];
   transitions: SemanticTransition[];
   flags: SemanticFrameFlags;

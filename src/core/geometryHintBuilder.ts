@@ -54,14 +54,14 @@ export function buildGeometryHint(frame: Pick<SemanticFrame, 'frame' | 'time' | 
   const edges = new Map<string, GeometryEdge>();
   const faces: GeometryFace[] = [];
 
-  if (frame.count === 4 && frame.state !== 'partial_open' && pointIds.length >= 4) {
+  if (frame.count === 4 && frame.state !== 'partial_open') {
     const desired = ['hand_1:thumb', 'hand_1:index', 'hand_2:index', 'hand_2:thumb'];
-    const quad = desired.every((id) => unique.has(id)) ? desired : pointIds.slice(0, 4);
-    if (quad.length === 4) {
+    const hasExpectedIdentities = desired.every((id) => unique.has(id));
+    if (!hasExpectedIdentities) warnings.push('quad_requires_expected_hand_identity');
+    if (hasExpectedIdentities && pointIds.length === 4) {
+      const quad = desired;
       for (let index = 0; index < quad.length; index += 1) addEdge(edges, quad[index], quad[(index + 1) % quad.length], 'perimeter');
       faces.push(stableFace('portal-4', quad, 'quad'));
-    } else {
-      warnings.push('quad_requires_four_unique_points');
     }
   } else if (frame.count === 10 && pointIds.length >= 10) {
     const complete = pointIds.slice(0, 10);

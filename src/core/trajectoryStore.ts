@@ -2,6 +2,7 @@ import {
   DEFAULT_TRACKING_CONFIG,
   FINGER_NAMES,
   HAND_IDS,
+  type ExtendedSemanticPoint,
   type FingerName,
   type FingerSample,
   type IdentityFrameResult,
@@ -19,7 +20,7 @@ export interface TrajectoryStoreOptions extends IdentityTrackerOptions, Semantic
   shortGapFrames?: number;
 }
 
-export interface InterpolatedPoint extends Omit<SemanticPoint, 'x' | 'y'> {
+export interface InterpolatedPoint extends Omit<ExtendedSemanticPoint, 'x' | 'y'> {
   frame: number;
   time: number;
   timestamp_us: number;
@@ -50,6 +51,14 @@ function cloneRawFrame(frame: RawFrame): RawFrame {
 
 function pointKey(point: Pick<SemanticPoint, 'side' | 'finger'>): string {
   return `${point.side}:${point.finger}`;
+}
+
+function highestFrameIndex(frames: readonly { frame: number }[]): number {
+  let highest = -1;
+  for (const frame of frames) {
+    if (frame.frame > highest) highest = frame.frame;
+  }
+  return highest;
 }
 
 function interpolate(a: Point2D, b: Point2D, factor: number): Point2D {
@@ -171,11 +180,11 @@ export class TrajectoryStore {
 
   public interpolateSemanticPoints(): InterpolatedPoint[] {
     const frames = [...this.semanticFrames].sort((a, b) => a.frame - b.frame);
-    const byKey = new Map<string, Map<number, { point: SemanticPoint; frame: SemanticFrame }>>();
+    const byKey = new Map<string, Map<number, { point: ExtendedSemanticPoint; frame: SemanticFrame }>>();
     for (const frame of frames) {
       for (const point of frame.extendedPoints) {
         const key = pointKey(point);
-        const series = byKey.get(key) ?? new Map<number, { point: SemanticPoint; frame: SemanticFrame }>();
+        const series = byKey.get(key) ?? new Map<number, { point: ExtendedSemanticPoint; frame: SemanticFrame }>();
         series.set(frame.frame, { point, frame });
         byKey.set(key, series);
       }
@@ -210,6 +219,12 @@ export class TrajectoryStore {
         for (let skipped = 1; skipped <= gap; skipped += 1) {
           const factor = skipped / (gap + 1);
           const point = interpolate(current.point, next.point, factor);
+          const releaseBlend = current.point.releaseBlend !== undefined && next.point.releaseBlend !== undefined
+            ? current.point.releaseBlend + (next.point.releaseBlend - current.point.releaseBlend) * factor
+            : undefined;
+          const compressed = current.point.compressed !== undefined && next.point.compressed !== undefined
+            ? current.point.compressed && next.point.compressed
+            : undefined;
           output.push({
             ...point,
             side: current.point.side,
@@ -218,6 +233,8 @@ export class TrajectoryStore {
             time: current.frame.time + (next.frame.time - current.frame.time) * factor,
             timestamp_us: Math.round(current.frame.timestamp_us + (next.frame.timestamp_us - current.frame.timestamp_us) * factor),
             interpolated: true,
+            ...(compressed === undefined ? {} : { compressed }),
+            ...(releaseBlend === undefined ? {} : { releaseBlend }),
           });
         }
       }
@@ -239,6 +256,8 @@ export class TrajectoryStore {
         time: point.time,
         timestamp_us: point.timestamp_us,
         interpolated: point.interpolated,
+        ...(point.compressed === undefined ? {} : { compressed: point.compressed }),
+        ...(point.releaseBlend === undefined ? {} : { releaseBlend: point.releaseBlend }),
         ...(point.longGap ? { quality: 0 } : { quality: 1 }),
         ...(point.missing ? { missing: true, longGap: true } : {}),
       });
@@ -272,8 +291,9 @@ export class TrajectoryStore {
 
   public summary(): TrajectorySummary {
     const transitions = this.semanticFrames.flatMap((frame) => frame.transitions);
+    const highestFrame = Math.max(highestFrameIndex(this.rawFrames), highestFrameIndex(this.semanticFrames));
     return {
-      frameCount: Math.max(-1, ...this.rawFrames.map((frame) => frame.frame), ...this.semanticFrames.map((frame) => frame.frame)) + 1,
+      frameCount: highestFrame + 1,
       width: this.width,
       height: this.height,
       droppedFrames: this.rawFrames.filter((frame) => frame.flags?.dropped).length,

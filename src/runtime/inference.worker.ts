@@ -19,15 +19,12 @@ self.onmessage = async (event: MessageEvent<InferenceWorkerMessage>) => {
       return;
     }
     if (message.type === 'frame') {
-      try {
-        const result = engine.process({ ...message.frame, image: message.image });
-        send({ type: 'result', requestId: message.requestId, result });
-      } finally {
-        // ImageBitmap ownership is transferred to the worker.  The engine
-        // closes VideoFrame inputs itself, while worker-only bitmaps need an
-        // explicit release after inference to avoid a long-session leak.
-        try { message.image.close(); } catch { /* detached or already closed */ }
-      }
+      // HandLandmarkerEngine owns the transferred frame for the entire process
+      // call and releases it in a finally block on success and failure. Keep a
+      // single owner here so a strict VideoFrame/ImageBitmap implementation is
+      // not closed twice.
+      const result = engine.process({ ...message.frame, image: message.image });
+      send({ type: 'result', requestId: message.requestId, result });
       return;
     }
     engine.close();

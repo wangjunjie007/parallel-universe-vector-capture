@@ -22,6 +22,28 @@ describe('SemanticProcessor', () => {
     expect(new Set(last.points.map((point) => `${point.side}:${point.finger}`)).size).toBe(4);
     const hand1 = last.points.filter((point) => point.side === 'hand_1');
     expect(Math.hypot(hand1[0].x - hand1[1].x, hand1[0].y - hand1[1].y)).toBeCloseTo(1.5, 5);
+    const extendedHand1 = last.extendedPoints.filter((point) => point.side === 'hand_1');
+    const extendedPinchPair = extendedHand1.filter((point) => point.finger === 'thumb' || point.finger === 'index');
+    expect(extendedPinchPair).toHaveLength(2);
+    expect(extendedPinchPair.every((point) => point.compressed === true && point.releaseBlend === 0)).toBe(true);
+    expect(last.points.every((point) => !('compressed' in point) && !('releaseBlend' in point))).toBe(true);
+  });
+
+  it('scales the compressed pinch gap by source width', () => {
+    const tracker = new IdentityTracker();
+    const processor = createSemanticProcessor();
+    let last = runFrame(tracker, processor, 0, 'pinch');
+    // The fixture coordinates are source pixels; only the declared source
+    // width changes, so the semantic gap should follow the contract scaling.
+    for (let frame = 1; frame < 6; frame += 1) {
+      const identity = tracker.update(makeIdentityFrame(frame, [
+        makeHand({ candidateIndex: frame * 2, centerX: 260, gesture: 'pinch' }),
+        makeHand({ candidateIndex: frame * 2 + 1, centerX: 900, gesture: 'pinch' }),
+      ], 640, 720));
+      last = processor.processFrame(identity);
+    }
+    const hand1 = last.extendedPoints.filter((point) => point.side === 'hand_1');
+    expect(Math.hypot(hand1[0].x - hand1[1].x, hand1[0].y - hand1[1].y)).toBeCloseTo(0.75, 5);
   });
 
   it('keeps partial-open fingertips in extended output while strict output remains four', () => {
@@ -39,13 +61,25 @@ describe('SemanticProcessor', () => {
     const tracker = new IdentityTracker();
     const processor = createSemanticProcessor({ pinchReleaseBlendFrames: 18 });
     for (let frame = 0; frame < 6; frame += 1) runFrame(tracker, processor, frame, 'pinch');
-    const before = runFrame(tracker, processor, 6, 'open');
-    const first = before.points.find((point) => point.side === 'hand_1' && point.finger === 'thumb');
-    const later = runFrame(tracker, processor, 7, 'open');
-    const laterThumb = later.extendedPoints.find((point) => point.side === 'hand_1' && point.finger === 'thumb');
-    expect(first).toBeDefined();
-    expect(laterThumb).toBeDefined();
-    expect(Number.isFinite(laterThumb?.x)).toBe(true);
+    for (let frame = 6; frame < 12; frame += 1) runFrame(tracker, processor, frame, 'open');
+    const first = runFrame(tracker, processor, 12, 'open');
+    const firstThumb = first.extendedPoints.find((point) => point.side === 'hand_1' && point.finger === 'thumb');
+    expect(firstThumb).toMatchObject({ compressed: false });
+    expect(firstThumb?.releaseBlend).toBeGreaterThan(0);
+    expect(firstThumb?.releaseBlend).toBeLessThan(1);
+    const samples = [firstThumb?.x ?? 0];
+    const blends = [firstThumb?.releaseBlend ?? 0];
+    for (let frame = 13; frame < 30; frame += 1) {
+      const next = runFrame(tracker, processor, frame, 'open');
+      const thumb = next.extendedPoints.find((point) => point.side === 'hand_1' && point.finger === 'thumb');
+      expect(thumb).toBeDefined();
+      samples.push(thumb?.x ?? 0);
+      blends.push(thumb?.releaseBlend ?? 0);
+    }
+    expect(blends).toEqual([...blends].sort((a, b) => a - b));
+    expect(blends.at(-1)).toBe(1);
+    expect(samples[0]).not.toBeCloseTo(samples.at(-1) ?? 0, 3);
+    expect(first.points.every((point) => !('compressed' in point) && !('releaseBlend' in point))).toBe(true);
   });
 
   it('does not emit semantic points while identities are ambiguous', () => {

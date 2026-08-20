@@ -53,6 +53,19 @@ export interface InferenceInitResult {
   liveStreamFallback: boolean;
 }
 
+export type InferenceFallbackCode =
+  | 'worker_unavailable'
+  | 'worker_frame_transfer_unavailable'
+  | 'worker_initialization_failed'
+  | 'worker_runtime_failed'
+  | 'worker_frame_snapshot_failed';
+
+export interface InferenceFallbackReason {
+  code: InferenceFallbackCode;
+  phase: 'capability' | 'initialization' | 'runtime';
+  message: string;
+}
+
 export interface InferenceWorkerInitMessage {
   type: 'init';
   requestId: number;
