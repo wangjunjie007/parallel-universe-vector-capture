@@ -35,6 +35,10 @@ const fingerColors: Record<UiPoint['finger'], string> = {
   little: '#ff9d83',
 };
 
+// Pinch coordinates intentionally stay almost coincident for semantic/export fidelity.
+// Give the two overlay markers a small visual gap so they remain individually readable.
+const MIN_PINCH_MARKER_GAP = 10;
+
 const pointPosition = (point: UiVector, width: number, height: number, sourceWidth: number, sourceHeight: number, mirror: boolean) => {
   const rawX = point.nx !== undefined ? point.nx * width : (sourceWidth > 0 ? (point.x / sourceWidth) * width : point.x);
   const rawY = point.ny !== undefined ? point.ny * height : (sourceHeight > 0 ? (point.y / sourceHeight) * height : point.y);
@@ -85,9 +89,30 @@ const drawHand = (ctx: CanvasRenderingContext2D, hand: UiHand, width: number, he
     ctx.fill();
   }
 
+  const renderPositions = new Map<UiPoint['finger'], { x: number; y: number }>();
+  hand.points.forEach((point) => {
+    if (point.visible !== false) renderPositions.set(point.finger, pointPosition(point, width, height, sourceWidth, sourceHeight, mirror));
+  });
+  const thumbPosition = renderPositions.get('thumb');
+  const indexPosition = renderPositions.get('index');
+  if (thumbPosition && indexPosition) {
+    const dx = indexPosition.x - thumbPosition.x;
+    const dy = indexPosition.y - thumbPosition.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < MIN_PINCH_MARKER_GAP) {
+      const centerX = (thumbPosition.x + indexPosition.x) / 2;
+      const centerY = (thumbPosition.y + indexPosition.y) / 2;
+      const unitX = distance > 0.001 ? dx / distance : 1;
+      const unitY = distance > 0.001 ? dy / distance : 0;
+      const halfGap = MIN_PINCH_MARKER_GAP / 2;
+      renderPositions.set('thumb', { x: centerX - unitX * halfGap, y: centerY - unitY * halfGap });
+      renderPositions.set('index', { x: centerX + unitX * halfGap, y: centerY + unitY * halfGap });
+    }
+  }
+
   hand.points.forEach((point) => {
     if (point.visible === false) return;
-    const position = pointPosition(point, width, height, sourceWidth, sourceHeight, mirror);
+    const position = renderPositions.get(point.finger) ?? pointPosition(point, width, height, sourceWidth, sourceHeight, mirror);
     const pointColor = fingerColors[point.finger];
     ctx.save();
     ctx.fillStyle = pointColor;
