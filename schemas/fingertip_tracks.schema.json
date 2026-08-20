@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://parallel-universe-vector-capture.example/schemas/fingertip_tracks.schema.json",
+  "title": "Extended fingertip trajectories",
+  "type": "object", "additionalProperties": false,
+  "required": ["frame_count", "width", "height", "coordinate_space", "tracks"],
+  "properties": {
+    "frame_count": { "type": "integer", "minimum": 0 }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 },
+    "coordinate_space": { "const": "source_pixels_top_left" },
+    "tracks": { "type": "object", "patternProperties": { "^(hand_[12]):(thumb|index|middle|ring|little)$": { "type": "array", "items": { "$ref": "#/$defs/sample" } } }, "additionalProperties": false }
+  },
+  "$defs": {
+    "sample": {
+      "type": "object", "additionalProperties": false, "required": ["side", "finger", "x", "y", "frame", "time", "timestamp_us"],
+      "properties": {
+        "side": { "enum": ["hand_1", "hand_2"] }, "finger": { "enum": ["thumb", "index", "middle", "ring", "little"] },
+        "x": { "type": ["number", "null"] }, "y": { "type": ["number", "null"] }, "frame": { "type": "integer", "minimum": 0 },
+        "time": { "type": "number", "minimum": 0 }, "timestamp_us": { "type": "integer", "minimum": 0 },
+        "interpolated": { "type": "boolean" }, "compressed": { "type": "boolean" }, "quality": { "type": "number", "minimum": 0, "maximum": 1 },
+        "missing": { "type": "boolean" }, "longGap": { "type": "boolean" }
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+Parallel Universe Vector Capture application code is licensed under the MIT License (see LICENSE).
+
+This distribution bundles MediaPipe Tasks Vision 0.10.35 runtime files under Apache License 2.0.
+The hand landmarker model is distributed by the MediaPipe project under the terms accompanying the
+model and its task bundle. Review upstream notices before redistributing a modified bundle.
+
+MediaPipe: https://github.com/google-ai-edge/mediapipe

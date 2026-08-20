@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://parallel-universe-vector-capture.example/schemas/palm_tracks.schema.json",
+  "title": "Palm trajectories",
+  "type": "object", "additionalProperties": false,
+  "required": ["frame_count", "width", "height", "coordinate_space", "tracks"],
+  "properties": {
+    "frame_count": { "type": "integer", "minimum": 0 }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 },
+    "coordinate_space": { "const": "source_pixels_top_left" },
+    "tracks": {
+      "type": "object", "additionalProperties": false, "required": ["hand_1", "hand_2"],
+      "properties": { "hand_1": { "type": "array", "items": { "$ref": "#/$defs/sample" } }, "hand_2": { "type": "array", "items": { "$ref": "#/$defs/sample" } } }
+    }
+  },
+  "$defs": {
+    "sample": {
+      "type": "object", "additionalProperties": false, "required": ["side", "x", "y", "scale", "orientation", "visible", "frame", "time", "timestamp_us"],
+      "properties": {
+        "side": { "enum": ["hand_1", "hand_2"] }, "x": { "type": ["number", "null"] }, "y": { "type": ["number", "null"] },
+        "scale": { "type": ["number", "null"] }, "orientation": { "type": ["number", "null"] }, "visible": { "type": "boolean" },
+        "identityAmbiguous": { "type": "boolean" }, "frame": { "type": "integer", "minimum": 0 }, "time": { "type": "number", "minimum": 0 }, "timestamp_us": { "type": "integer", "minimum": 0 }, "missing": { "type": "boolean" }
+      }
+    }
+  }
+}

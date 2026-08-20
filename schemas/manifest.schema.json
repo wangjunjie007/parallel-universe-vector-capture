@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://parallel-universe-vector-capture.example/schemas/manifest.schema.json",
+  "title": "Parallel Universe Vector Capture manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "app", "model", "capture", "coordinate_space", "mirror", "rotation_degrees", "orientation_transform", "inference", "tracking", "transitions", "quality", "alignment", "privacy"],
+  "properties": {
+    "schema": { "const": "parallel-universe-vector-capture/1" },
+    "app": {
+      "type": "object", "additionalProperties": false, "required": ["name", "version"],
+      "properties": { "name": { "const": "parallel-universe-vector-capture" }, "version": { "type": "string", "minLength": 1 } }
+    },
+    "model": {
+      "type": "object", "additionalProperties": false, "required": ["name", "version", "confidence_granularity"],
+      "properties": {
+        "name": { "type": "string" }, "version": { "type": "string" },
+        "sha256": { "$ref": "#/$defs/sha256" }, "wasm_sha256": { "$ref": "#/$defs/sha256" },
+        "confidence_granularity": { "const": "hand" }
+      }
+    },
+    "capture": {
+      "type": "object", "additionalProperties": false, "required": ["mode", "width", "height"],
+      "properties": {
+        "mode": { "enum": ["realtime", "precise"] }, "source_name": { "type": "string" },
+        "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 },
+        "fps": { "type": "number", "exclusiveMinimum": 0 }, "duration_seconds": { "type": "number", "minimum": 0 },
+        "timebase": { "type": "string", "minLength": 1 }, "source_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "coordinate_space": { "const": "source_pixels_top_left" },
+    "mirror": { "type": "boolean" },
+    "rotation_degrees": { "type": "number" },
+    "orientation_transform": { "type": "string" },
+    "inference": {
+      "type": "object", "additionalProperties": false, "required": ["delegate"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 },
+        "delegate": { "enum": ["GPU", "CPU", "unknown"] }, "browser": { "type": "string" }, "system": { "type": "string" }
+      }
+    },
+    "tracking": {
+      "type": "object", "additionalProperties": false,
+      "required": ["confirmationFrames", "pinchGapPxAt1280", "pinchReleaseBlendFrames", "pinchEnterNormalized", "pinchExitNormalized", "shortGapFrames", "maxIdentityGapFrames", "allowed_point_counts", "full_open_count", "geometry_ten_point_direct_edges"],
+      "properties": {
+        "confirmationFrames": { "type": "integer", "minimum": 1 }, "pinchGapPxAt1280": { "type": "number", "exclusiveMinimum": 0 },
+        "pinchReleaseBlendFrames": { "type": "integer", "minimum": 0 }, "pinchEnterNormalized": { "type": "number", "minimum": 0 },
+        "pinchExitNormalized": { "type": "number", "minimum": 0 }, "shortGapFrames": { "type": "integer", "minimum": 0 },
+        "maxIdentityGapFrames": { "type": "integer", "minimum": 0 },
+        "allowed_point_counts": { "type": "array", "prefixItems": [{ "const": 0 }, { "const": 4 }, { "const": 10 }], "minItems": 3, "maxItems": 3 },
+        "full_open_count": { "const": 10 }, "geometry_ten_point_direct_edges": { "const": 45 }
+      }
+    },
+    "transitions": { "type": "object" }, "quality": { "type": "object" },
+    "alignment": { "enum": ["exact_source_frames", "presentation_time_estimate"] },
+    "privacy": {
+      "type": "object", "additionalProperties": false, "required": ["local_only", "uploads", "analytics"],
+      "properties": { "local_only": { "const": true }, "uploads": { "const": false }, "analytics": { "const": false } }
+    }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://parallel-universe-vector-capture.example/schemas/geometry-hint.schema.json",
+  "title": "Per-frame geometry hint",
+  "type": "object", "additionalProperties": false,
+  "required": ["frame", "time", "state", "point_ids", "edges", "faces", "quality"],
+  "properties": {
+    "frame": { "type": "integer", "minimum": 0 }, "time": { "type": "number", "minimum": 0 },
+    "state": { "enum": ["none", "pinch", "partial_open", "all_open"] },
+    "point_ids": { "type": "array", "items": { "type": "string", "pattern": "^hand_[12]:(thumb|index|middle|ring|little)$" } },
+    "edges": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "from", "to", "kind"], "properties": { "id": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" }, "kind": { "enum": ["perimeter", "internal", "corresponding", "complete"] } } } },
+    "faces": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["face_id", "point_ids", "topology", "stable"], "properties": { "face_id": { "type": "string" }, "point_ids": { "type": "array", "items": { "type": "string" } }, "topology": { "enum": ["quad", "partial", "complete"] }, "stable": { "type": "boolean" } } } },
+    "quality": { "type": "object", "additionalProperties": false, "required": ["valid", "warnings"], "properties": { "valid": { "type": "boolean" }, "warnings": { "type": "array", "items": { "type": "string" } } } }
+  }
+}
