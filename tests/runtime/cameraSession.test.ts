@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CameraSession,
+  checkCameraCapabilities,
+  isCameraSecureContext,
   type CameraSessionState,
 } from '../../src/runtime/cameraSession';
 
@@ -202,5 +204,36 @@ describe('CameraSession lifecycle', () => {
     await expect(secondRequest).resolves.toBeDefined();
     expect(firstTrack.stop).toHaveBeenCalledTimes(1);
     expect(session.mediaStream).toBe(secondStream);
+  });
+});
+
+describe('camera secure-context detection', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    ['localhost', true],
+    ['127.0.0.1', true],
+    ['[::1]', true],
+    ['::1', true],
+    ['capture.example', false],
+  ])('recognizes %s as secure=%s', (hostname, expected) => {
+    vi.stubGlobal('window', {
+      isSecureContext: false,
+      location: { hostname },
+    });
+
+    expect(isCameraSecureContext()).toBe(expected);
+    expect(checkCameraCapabilities().secureContext).toBe(expected);
+  });
+
+  it('accepts a secure remote origin even when it is not loopback', () => {
+    vi.stubGlobal('window', {
+      isSecureContext: true,
+      location: { hostname: 'capture.example' },
+    });
+
+    expect(isCameraSecureContext()).toBe(true);
   });
 });

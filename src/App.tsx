@@ -44,7 +44,7 @@ import type {
   PermissionState,
 } from './ui/types';
 import type { UiHand, UiPoint, OverlaySnapshot } from './ui/types';
-import { CameraSession, cameraErrorMessage } from './runtime/cameraSession';
+import { CameraSession, cameraErrorMessage, isCameraSecureContext } from './runtime/cameraSession';
 import { inspectVideoFile, processVideoFile, revokeVideoUrl as revokeSourceVideoUrl, startRecording as startRuntimeRecording, type LocalVideoMetadata, type RecordingController } from './runtime/videoSource';
 import { InferenceClient } from './runtime/inferenceClient';
 import type { InferenceInitResult } from './runtime/protocol';
@@ -70,8 +70,7 @@ export function detectCapabilities(): CapabilitySnapshot {
       videoFrameCallback: capability('unknown'),
     };
   }
-  const hostname = window.location.hostname;
-  const secure = window.isSecureContext || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  const secure = isCameraSecureContext();
   const hasCamera = Boolean(navigator.mediaDevices?.getUserMedia);
   const hasWorker = typeof Worker !== 'undefined';
   const hasWorkerFrameTransfer = typeof ImageBitmap !== 'undefined' && typeof createImageBitmap === 'function';
@@ -167,6 +166,13 @@ function browserLabel(): string {
 function systemLabel(): string {
   if (typeof navigator === 'undefined') return 'unknown';
   return navigator.platform || 'unknown';
+}
+
+function modelInitializationErrorMessage(error: unknown): string {
+  const detail = error instanceof Error && error.message.trim()
+    ? error.message
+    : 'Unknown Hand Landmarker initialization error.';
+  return `Hand Landmarker model initialization failed: ${detail}`;
 }
 
 function uiPoint(side: HandId, finger: FingerName, x: number, y: number, width: number, height: number, interpolated = false): UiPoint {
@@ -308,6 +314,21 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     cameraRef.current = null;
     setVideoStream(null);
   }, [invalidateLive, invalidateRecordingStart]);
+
+  const handleInferenceInitializationError = useCallback((error: unknown) => {
+    // Model setup happens after camera permission has succeeded. Keep that
+    // distinction visible to the user and do not turn a model/WASM failure
+    // into a misleading camera-permission diagnostic.
+    const message = modelInitializationErrorMessage(error);
+    cameraRef.current?.stopFrames();
+    stopCamera();
+    patchSnapshot((current) => ({
+      permission: 'granted',
+      phase: 'error',
+      errorMessage: message,
+      export: { ...current.export, standardReady: false, diagnosticsReady: false, quality: 'error' },
+    }));
+  }, [patchSnapshot, stopCamera]);
 
   const revokeVideoUrl = useCallback(() => {
     revokeSourceVideoUrl(sourceMetadataRef.current);
@@ -514,9 +535,7 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     }
   }, [addDiagnostic, appendOutput, patchSnapshot, syncInferenceProvenance]);
 
-  const startLiveFrames = useCallback(() => {
-    const session = cameraRef.current;
-    if (!session) return;
+  const resetLiveCaptureState = useCallback((width = snapshot.source.width, height = snapshot.source.height) => {
     invalidateLive();
     trajectoryRef.current.clear();
     diagnosticsRef.current.clear();
@@ -526,8 +545,8 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     patchSnapshot((current) => ({
       overlay: {
         ...initialOverlay(),
-        width: current.source.width,
-        height: current.source.height,
+        width,
+        height,
       },
       metrics: {
         ...current.metrics,
@@ -542,9 +561,18 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
       errorMessage: undefined,
     }));
     publishDiagnostics();
+  }, [invalidateLive, patchSnapshot, publishDiagnostics, snapshot.source.height, snapshot.source.width]);
+
+  const startLiveFrames = useCallback(() => {
+    const session = cameraRef.current;
+    if (!session) return;
+    // Session state is reset before model initialization. Keeping this method
+    // limited to frame-loop startup prevents it from erasing initialization
+    // provenance (for example, a GPU/Worker fallback) just recorded by the
+    // inference client.
     const generation = liveGenerationRef.current;
     session.startFrames((frame) => { void handleLiveFrame(frame, generation, session); });
-  }, [handleLiveFrame, invalidateLive, patchSnapshot, publishDiagnostics]);
+  }, [handleLiveFrame]);
 
   const requestCamera = useCallback(async (cameraIdOverride?: string, recordingStartGeneration?: number) => {
     if (recordingStartGeneration === undefined) invalidateRecordingStart();
@@ -567,12 +595,18 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     let session: CameraSession | undefined;
     const isCurrentRequest = () => cameraRequestGenerationRef.current === requestGeneration
       && cameraRef.current === session;
+    const source = snapshot.source;
+    if (source.kind === 'file' || source.kind === 'recording') revokeVideoUrl();
+
+    // Camera acquisition, playback, and track setup have their own error
+    // boundary. Only failures in this section are classified as camera or
+    // permission errors.
+    let activeSession: CameraSession;
+    let metadata: Awaited<ReturnType<CameraSession['request']>>;
     try {
-      const source = snapshot.source;
-      if (source.kind === 'file' || source.kind === 'recording') revokeVideoUrl();
       session = cameraRef.current ?? new CameraSession(videoRef.current ?? undefined);
       cameraRef.current = session;
-      const activeSession = session;
+      activeSession = session;
       activeSession.setCallbacks({
         onEnded: () => {
           if (cameraRef.current !== activeSession) return;
@@ -594,28 +628,9 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
       // StageCanvas owns the visible mirror transform; keep the camera source untransformed
       // so the overlay and video cannot be mirrored twice.
       activeSession.setMirror(false);
-      const metadata = await activeSession.request(cameraIdOverride ?? snapshot.selectedCameraId);
+      metadata = await activeSession.request(cameraIdOverride ?? snapshot.selectedCameraId);
       if (!isCurrentRequest()) return;
       setVideoStream(activeSession.mediaStream ?? null);
-      const width = metadata.width || DEFAULT_WIDTH;
-      const height = metadata.height || DEFAULT_HEIGHT;
-      const init = await ensureInference('realtime');
-      if (!isCurrentRequest() || inferenceModeRef.current !== 'realtime') return;
-      const actualDelegate = inferenceRef.current?.executionDelegate ?? init.delegate;
-      patchSnapshot((current) => ({
-        permission: 'granted',
-        phase: 'preview',
-        mode: 'live',
-        source: { ...current.source, kind: 'camera', width, height, fps: metadata.frameRate ?? DEFAULT_FPS, name: 'camera', duration: undefined, rotation: 0, orientationLabel: width >= height ? 'landscape' : 'portrait' },
-        overlay: { ...current.overlay, width, height, hands: [], semanticCount: 0 },
-        metrics: { ...current.metrics, alignment: 'presentation_time_estimate' },
-        diagnostics: current.diagnostics.filter((item) => !['secure-context', 'camera-api', 'permission'].includes(item.id)),
-        modelVersion: init.modelVersion,
-        delegate: actualDelegate,
-      }));
-      await enumerateCameras();
-      if (!isCurrentRequest()) return;
-      startLiveFrames();
     } catch (error) {
       if (!isCurrentRequest()) return;
       const name = error instanceof DOMException ? error.name : 'UnknownError';
@@ -627,23 +642,67 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
         permission,
         phase: 'error',
         errorMessage: detail,
-        // Keep model/WASM and runtime fallback diagnostics emitted while the
-        // request was awaiting inference initialization.
         diagnostics: [...current.diagnostics.filter((item) => item.id !== permissionDiagnostic.id), permissionDiagnostic],
       }));
+      return;
     }
-  }, [ensureInference, enumerateCameras, invalidateLive, invalidateProcessing, invalidateRecordingStart, patchSnapshot, revokeVideoUrl, snapshot.selectedCameraId, snapshot.source, startLiveFrames, stopCamera]);
+
+    const width = metadata.width || DEFAULT_WIDTH;
+    const height = metadata.height || DEFAULT_HEIGHT;
+    resetLiveCaptureState(width, height);
+    let init: InferenceInitResult;
+    try {
+      init = await ensureInference('realtime');
+    } catch (error) {
+      if (!isCurrentRequest()) return;
+      handleInferenceInitializationError(error);
+      return;
+    }
+    if (!isCurrentRequest() || inferenceModeRef.current !== 'realtime') return;
+    const client = inferenceRef.current;
+    const actualDelegate = client
+      ? syncInferenceProvenance(client, init.delegate)
+      : init.delegate;
+    patchSnapshot((current) => ({
+      permission: 'granted',
+      phase: 'preview',
+      mode: 'live',
+      source: { ...current.source, kind: 'camera', width, height, fps: metadata.frameRate ?? DEFAULT_FPS, name: 'camera', duration: undefined, rotation: 0, orientationLabel: width >= height ? 'landscape' : 'portrait' },
+      overlay: { ...current.overlay, width, height, hands: [], semanticCount: 0 },
+      metrics: { ...current.metrics, alignment: 'presentation_time_estimate' },
+      diagnostics: current.diagnostics.filter((item) => !['secure-context', 'camera-api', 'permission'].includes(item.id)),
+      modelVersion: init.modelVersion,
+      delegate: actualDelegate,
+    }));
+    await enumerateCameras();
+    if (!isCurrentRequest()) return;
+    startLiveFrames();
+  }, [ensureInference, enumerateCameras, handleInferenceInitializationError, invalidateLive, invalidateProcessing, invalidateRecordingStart, patchSnapshot, resetLiveCaptureState, revokeVideoUrl, snapshot.selectedCameraId, snapshot.source, startLiveFrames, stopCamera, syncInferenceProvenance]);
 
   const startPreview = useCallback(async () => {
     invalidateRecordingStart();
     if (cameraRef.current?.mediaStream) {
-      await ensureInference('realtime');
-      patchSnapshot({ mode: 'live', phase: 'preview', errorMessage: undefined });
+      const session = cameraRef.current;
+      const requestGeneration = cameraRequestGenerationRef.current;
+      resetLiveCaptureState();
+      let init: InferenceInitResult;
+      try {
+        init = await ensureInference('realtime');
+      } catch (error) {
+        if (cameraRef.current !== session || cameraRequestGenerationRef.current !== requestGeneration) return;
+        handleInferenceInitializationError(error);
+        return;
+      }
+      if (cameraRef.current !== session || cameraRequestGenerationRef.current !== requestGeneration || inferenceModeRef.current !== 'realtime') return;
+      const client = inferenceRef.current;
+      if (!client) return;
+      const actualDelegate = syncInferenceProvenance(client, init.delegate);
+      patchSnapshot({ mode: 'live', phase: 'preview', errorMessage: undefined, delegate: actualDelegate });
       startLiveFrames();
       return;
     }
     await requestCamera();
-  }, [ensureInference, invalidateRecordingStart, patchSnapshot, requestCamera, startLiveFrames]);
+  }, [ensureInference, handleInferenceInitializationError, invalidateRecordingStart, patchSnapshot, requestCamera, resetLiveCaptureState, startLiveFrames, syncInferenceProvenance]);
 
   const startRecording = useCallback(async () => {
     if (recordingRef.current || modeRef.current !== 'live') return;

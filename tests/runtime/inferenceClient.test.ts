@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { InferenceWorkerMessage, InferenceWorkerResponse } from '../../src/runtime/protocol';
+import type { InferenceFallbackReason, InferenceWorkerMessage, InferenceWorkerResponse } from '../../src/runtime/protocol';
 
 const fallbackProcess = vi.fn();
 const fallbackInit = vi.fn(async () => ({
@@ -26,6 +26,7 @@ class FakeWorker extends EventTarget {
   static instances: FakeWorker[] = [];
   static holdReady = false;
   static initError: string | undefined;
+  static initFallbackReasons: InferenceFallbackReason[] | undefined;
   readonly terminated = vi.fn();
   readonly posted: InferenceWorkerMessage[] = [];
 
@@ -52,6 +53,7 @@ class FakeWorker extends EventTarget {
               delegate: 'GPU',
               modelVersion: 'test-model',
               liveStreamFallback: true,
+              fallbackReasons: FakeWorker.initFallbackReasons,
             },
           },
         }));
@@ -78,6 +80,7 @@ describe('InferenceClient worker failure handling', () => {
     FakeWorker.instances.length = 0;
     FakeWorker.holdReady = false;
     FakeWorker.initError = undefined;
+    FakeWorker.initFallbackReasons = undefined;
     fallbackInit.mockClear();
     fallbackProcess.mockReset();
     fallbackClose.mockClear();
@@ -163,6 +166,27 @@ describe('InferenceClient worker failure handling', () => {
     expect(client.executionRuntime).toBe('worker');
   });
 
+  it('makes delegate fallback provenance from a worker result consumable', async () => {
+    const reason: InferenceFallbackReason = {
+      code: 'gpu_delegate_unavailable',
+      phase: 'initialization',
+      message: 'GPU delegate initialization failed (Error); CPU delegate selected.',
+    };
+    FakeWorker.initFallbackReasons = [reason];
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: FakeWorker });
+    Object.defineProperty(globalThis, 'ImageBitmap', { configurable: true, writable: true, value: FakeBitmap });
+    Object.defineProperty(globalThis, 'createImageBitmap', { configurable: true, writable: true, value: vi.fn() });
+    const { InferenceClient } = await import('../../src/runtime/inferenceClient');
+    const client = new InferenceClient();
+
+    await expect(client.init({ modelUrl: '/model', wasmUrl: '/wasm', preferWorker: true })).resolves.toMatchObject({
+      runtime: 'worker',
+      fallbackReasons: [reason],
+    });
+    expect(client.consumeFallbackReasons()).toEqual([reason]);
+    expect(client.fallbackReasons).toEqual([]);
+  });
+
   it('cancels a superseded worker initialization without waiting for its timeout', async () => {
     FakeWorker.holdReady = true;
     Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: FakeWorker });
@@ -216,6 +240,60 @@ describe('InferenceClient worker failure handling', () => {
       message: 'module startup failed',
     });
     expect(FakeWorker.instances[0]?.terminated).toHaveBeenCalledTimes(1);
+  });
+
+  it('records delegate provenance from a main-thread initialization result', async () => {
+    const reason: InferenceFallbackReason = {
+      code: 'gpu_delegate_unavailable',
+      phase: 'initialization',
+      message: 'GPU delegate initialization failed (Error); CPU delegate selected.',
+    };
+    fallbackInit.mockResolvedValueOnce({
+      runtime: 'main-thread',
+      delegate: 'CPU',
+      modelVersion: 'test-model',
+      liveStreamFallback: true,
+      fallbackReasons: [reason],
+    });
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: undefined });
+    const { InferenceClient } = await import('../../src/runtime/inferenceClient');
+    const client = new InferenceClient();
+
+    await expect(client.init({ modelUrl: '/model', wasmUrl: '/wasm', preferWorker: false })).resolves.toMatchObject({
+      runtime: 'main-thread',
+      delegate: 'CPU',
+      fallbackReasons: [reason],
+    });
+    expect(client.fallbackReasons).toEqual([reason]);
+  });
+
+  it('preserves delegate provenance while rebuilding after a runtime worker failure', async () => {
+    const reason: InferenceFallbackReason = {
+      code: 'gpu_delegate_unavailable',
+      phase: 'initialization',
+      message: 'GPU delegate initialization failed (Error); CPU delegate selected.',
+    };
+    fallbackInit.mockResolvedValueOnce({
+      runtime: 'main-thread',
+      delegate: 'CPU',
+      modelVersion: 'test-model',
+      liveStreamFallback: true,
+      fallbackReasons: [reason],
+    });
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: FakeWorker });
+    Object.defineProperty(globalThis, 'ImageBitmap', { configurable: true, writable: true, value: FakeBitmap });
+    Object.defineProperty(globalThis, 'createImageBitmap', { configurable: true, writable: true, value: vi.fn() });
+    const { InferenceClient } = await import('../../src/runtime/inferenceClient');
+    const client = new InferenceClient();
+    await client.init({ modelUrl: '/model', wasmUrl: '/wasm', preferWorker: true });
+
+    FakeWorker.instances[0]?.fail('worker stopped');
+
+    await vi.waitFor(() => expect(client.executionDelegate).toBe('CPU'));
+    expect(client.fallbackReasons).toEqual([
+      { code: 'worker_runtime_failed', phase: 'runtime', message: 'worker stopped' },
+      reason,
+    ]);
   });
 
   it.each([

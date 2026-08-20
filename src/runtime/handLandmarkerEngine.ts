@@ -10,7 +10,13 @@ import {
   type RawLandmark,
 } from '../core/types';
 import { fetchVerifiedBytes } from './assetIntegrity';
-import type { InferenceFrameInput, InferenceFrameOutput, InferenceInitOptions, InferenceInitResult } from './protocol';
+import type {
+  InferenceFallbackReason,
+  InferenceFrameInput,
+  InferenceFrameOutput,
+  InferenceInitOptions,
+  InferenceInitResult,
+} from './protocol';
 
 const isVideoFrame = (value: InferenceFrameInput['image']): value is VideoFrame =>
   typeof VideoFrame !== 'undefined' && value instanceof VideoFrame;
@@ -26,6 +32,32 @@ const releaseFrameInput = (image: InferenceFrameInput['image']): void => {
 const toSourcePoint = (landmark: NormalizedLandmark, width: number, height: number) => ({
   x: Math.max(0, Math.min(width, landmark.x * width)),
   y: Math.max(0, Math.min(height, landmark.y * height)),
+});
+
+// Delegate errors can contain asset URLs, local paths, or browser-specific
+// implementation details. Keep provenance useful without copying that text
+// into diagnostics or an exported manifest.
+const safeDelegateErrorName = (error: unknown): string => {
+  const name = error instanceof Error ? error.name : '';
+  const allowedNames = new Set([
+    'Error',
+    'TypeError',
+    'RangeError',
+    'ReferenceError',
+    'SyntaxError',
+    'DOMException',
+    'AbortError',
+    'InvalidStateError',
+    'NotSupportedError',
+    'OperationError',
+  ]);
+  return allowedNames.has(name) ? name : 'unknown error';
+};
+
+const gpuDelegateFallbackReason = (error: unknown): InferenceFallbackReason => ({
+  code: 'gpu_delegate_unavailable',
+  phase: 'initialization',
+  message: `GPU delegate initialization failed (${safeDelegateErrorName(error)}); CPU delegate selected.`,
 });
 
 export function mapHandResult(result: HandLandmarkerResult, width: number, height: number): RawHandCandidate[] {
@@ -51,6 +83,7 @@ export class HandLandmarkerEngine {
   private landmarker: HandLandmarker | undefined;
   private options: InferenceInitOptions | undefined;
   private delegate: 'GPU' | 'CPU' | 'unknown' = 'unknown';
+  private fallbackReasons: InferenceFallbackReason[] = [];
   private lastTimestamp = -1;
   /**
    * Invalidates in-flight model construction when a new mode/source starts.
@@ -64,6 +97,7 @@ export class HandLandmarkerEngine {
     this.closeCurrent();
     this.options = { ...options };
     this.delegate = 'unknown';
+    this.fallbackReasons = [];
     this.lastTimestamp = -1;
     const model = await fetchVerifiedBytes(options.modelUrl, options.modelSha256);
     this.assertCurrent(generation);
@@ -105,6 +139,7 @@ export class HandLandmarkerEngine {
       } catch (gpuError) {
         if (options.preferGpu === false) throw gpuError;
         this.assertCurrent(generation);
+        this.fallbackReasons.push(gpuDelegateFallbackReason(gpuError));
         created = await HandLandmarker.createFromOptions(fileset, {
           baseOptions: { ...base, delegate: 'CPU' },
           runningMode: 'VIDEO',
@@ -143,6 +178,9 @@ export class HandLandmarkerEngine {
       // Tasks Vision 0.10.x exposes VIDEO for HandLandmarker; monotonic VIDEO timestamps
       // provide deterministic real-time behavior while retaining a truthful fallback flag.
       liveStreamFallback: true,
+      fallbackReasons: this.fallbackReasons.length
+        ? this.fallbackReasons.map((reason) => ({ ...reason }))
+        : undefined,
     };
   }
 
@@ -182,6 +220,7 @@ export class HandLandmarkerEngine {
     this.lastTimestamp = -1;
     this.options = undefined;
     this.delegate = 'unknown';
+    this.fallbackReasons = [];
   }
 
   private assertCurrent(generation: number): void {

@@ -51,6 +51,8 @@ export interface InferenceInitResult {
   wasmSha256?: string;
   wasmVariant?: 'classic-simd' | 'classic-nosimd' | 'module-simd';
   liveStreamFallback: boolean;
+  /** Runtime choices made while constructing this inference session. */
+  fallbackReasons?: InferenceFallbackReason[];
 }
 
 export type InferenceFallbackCode =
@@ -58,7 +60,8 @@ export type InferenceFallbackCode =
   | 'worker_frame_transfer_unavailable'
   | 'worker_initialization_failed'
   | 'worker_runtime_failed'
-  | 'worker_frame_snapshot_failed';
+  | 'worker_frame_snapshot_failed'
+  | 'gpu_delegate_unavailable';
 
 export interface InferenceFallbackReason {
   code: InferenceFallbackCode;

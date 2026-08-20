@@ -99,6 +99,7 @@ export class InferenceClient {
           worker.terminate();
           throw new Error('Inference initialization superseded');
         }
+        this.recordInitFallbackReasons(result);
         this.worker = worker;
         this.attachWorkerHandler(worker);
         this.runtime = 'worker';
@@ -124,6 +125,7 @@ export class InferenceClient {
     if (this.lifecycle !== lifecycle) throw new Error('Inference initialization superseded');
     const result = await this.initializeFallback(options, lifecycle);
     if (this.lifecycle !== lifecycle) throw new Error('Inference initialization superseded');
+    this.recordInitFallbackReasons(result);
     this.runtime = 'main-thread';
     this.initialized = true;
     return result;
@@ -329,8 +331,9 @@ export class InferenceClient {
     const lifecycle = this.lifecycle;
     const token = ++this.fallbackInitToken;
     const promise = this.initializeFallback(options, lifecycle)
-      .then(() => {
+      .then((result) => {
         if (this.lifecycle !== lifecycle) throw new Error('Inference client disposed during fallback');
+        this.recordInitFallbackReasons(result);
         this.runtime = 'main-thread';
         this.initialized = true;
       })
@@ -379,6 +382,10 @@ export class InferenceClient {
 
   private recordFallback(reason: InferenceFallbackReason): void {
     this.recordedFallbackReasons.push({ ...reason });
+  }
+
+  private recordInitFallbackReasons(result: InferenceInitResult): void {
+    for (const reason of result.fallbackReasons ?? []) this.recordFallback(reason);
   }
 
   private disposeWorker(sendDispose = false): void {

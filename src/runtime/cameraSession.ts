@@ -35,9 +35,24 @@ export interface CameraSessionCallbacks {
 
 type VideoFrameCallback = VideoFrameRequestCallback;
 
+/**
+ * Camera APIs are available in secure contexts, with the standard loopback
+ * exceptions used by local development. Keep this predicate shared with the
+ * UI capability check so a localhost preview cannot disagree with request().
+ */
+export function isCameraSecureContext(): boolean {
+  if (typeof window === 'undefined') return true;
+  const hostname = window.location.hostname.toLowerCase();
+  return window.isSecureContext
+    || hostname === 'localhost'
+    || hostname === '127.0.0.1'
+    || hostname === '[::1]'
+    || hostname === '::1';
+}
+
 export function checkCameraCapabilities(): CameraCapabilities {
   return {
-    secureContext: typeof window === 'undefined' || window.isSecureContext || window.location.hostname === 'localhost',
+    secureContext: isCameraSecureContext(),
     camera: typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia),
     workers: typeof Worker !== 'undefined',
     wasm: typeof WebAssembly !== 'undefined',
