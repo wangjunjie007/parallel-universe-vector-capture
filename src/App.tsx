@@ -1048,7 +1048,9 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
         captureMode: 'precise',
         alignment: processResult.alignment,
         source: { name: metadata.name, width: metadata.width, height: metadata.height, fps: processResult.derivedFps ?? metadata.fps, durationSeconds: metadata.duration, timebase: '1/1000000', sha256: metadata.sha256 },
-        mirror: sourceSnapshot.mirrored,
+        // Preview mirroring is a display transform only. Raw landmarks and
+        // exported source coordinates always remain in unmirrored source space.
+        mirror: false,
         rotationDegrees: sourceSnapshot.rotation,
         orientationTransform: sourceSnapshot.orientationLabel,
         inferenceWidth: metadata.width,
