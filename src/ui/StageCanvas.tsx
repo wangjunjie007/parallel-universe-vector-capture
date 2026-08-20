@@ -176,17 +176,17 @@ const drawRegionEffects = (ctx: CanvasRenderingContext2D, corners: OverlayPositi
     const blob = ctx.createRadialGradient(x, y, 0, x, y, radius); blob.addColorStop(0, color); blob.addColorStop(0.45, `${color}aa`); blob.addColorStop(1, `${color}00`);
     ctx.fillStyle = blob; ctx.fillRect(left, top, width, height); ctx.restore();
   };
-  paintField(0, 0.92);
-  if (effects.includes('aurora')) { paintBlob(cx + Math.sin(phase) * width * 0.38, cy - height * 0.2, Math.max(width, height) * 0.8, '#55f7c8', 0.72); paintBlob(cx - width * 0.3, cy + Math.cos(phase * 0.8) * height * 0.3, Math.max(width, height) * 0.72, '#8d6bff', 0.62); paintBlob(cx + width * 0.25, cy + height * 0.25, Math.max(width, height) * 0.58, '#ff537d', 0.5); }
-  if (effects.includes('prismatic')) { paintField(1.9, 0.72, 'screen'); paintBlob(cx + Math.cos(phase * 1.3) * width * 0.28, cy, Math.max(width, height) * 0.62, '#fff36a', 0.42); paintBlob(cx - width * 0.25, cy + Math.sin(phase) * height * 0.32, Math.max(width, height) * 0.56, '#58d9ff', 0.45); }
-  if (effects.includes('energyBloom')) { for (let i = 0; i < 5; i += 1) paintBlob(cx + Math.cos(phase + i * 1.25) * width * 0.34, cy + Math.sin(phase * 0.9 + i) * height * 0.34, Math.max(width, height) * (0.35 + i * 0.08), palette[i % 3], 0.2); }
-  if (effects.includes('liquidChromatic')) { paintBlob(left + width * (0.2 + 0.15 * Math.sin(phase)), top + height * 0.35, Math.max(width, height) * 0.65, '#ff317f', 0.56, 'overlay'); paintBlob(left + width * 0.78, top + height * (0.62 + 0.16 * Math.cos(phase)), Math.max(width, height) * 0.7, '#26f1ff', 0.52, 'overlay'); }
+  paintField(0, 0.28);
+  if (effects.includes('aurora')) { paintBlob(cx + Math.sin(phase) * width * 0.38, cy - height * 0.2, Math.max(width, height) * 0.8, '#55f7c8', 0.34); paintBlob(cx - width * 0.3, cy + Math.cos(phase * 0.8) * height * 0.3, Math.max(width, height) * 0.72, '#8d6bff', 0.3); paintBlob(cx + width * 0.25, cy + height * 0.25, Math.max(width, height) * 0.58, '#ff537d', 0.24); }
+  if (effects.includes('prismatic')) { paintField(1.9, 0.24, 'screen'); paintBlob(cx + Math.cos(phase * 1.3) * width * 0.28, cy, Math.max(width, height) * 0.62, '#fff36a', 0.2); paintBlob(cx - width * 0.25, cy + Math.sin(phase) * height * 0.32, Math.max(width, height) * 0.56, '#58d9ff', 0.22); }
+  if (effects.includes('energyBloom')) { for (let i = 0; i < 5; i += 1) paintBlob(cx + Math.cos(phase + i * 1.25) * width * 0.34, cy + Math.sin(phase * 0.9 + i) * height * 0.34, Math.max(width, height) * (0.35 + i * 0.08), palette[i % 3], 0.12); }
+  if (effects.includes('liquidChromatic')) { paintBlob(left + width * (0.2 + 0.15 * Math.sin(phase)), top + height * 0.35, Math.max(width, height) * 0.65, '#ff317f', 0.24, 'overlay'); paintBlob(left + width * 0.78, top + height * (0.62 + 0.16 * Math.cos(phase)), Math.max(width, height) * 0.7, '#26f1ff', 0.22, 'overlay'); }
   if (effects.includes('kaleido')) {
-    ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = 0.33; ctx.translate(cx, cy); ctx.rotate(Math.sin(phase) * 0.18);
+    ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = 0.16; ctx.translate(cx, cy); ctx.rotate(Math.sin(phase) * 0.18);
     for (let i = 0; i < 6; i += 1) { ctx.rotate(Math.PI / 3); ctx.fillStyle = palette[i % 3]; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(width * 0.7, height * 0.12); ctx.lineTo(width * 0.18, height * 0.62); ctx.closePath(); ctx.fill(); }
     ctx.restore();
   }
-  if (effects.includes('invertCascade')) { paintField(phase * 0.7, 0.52, 'difference'); paintBlob(cx + Math.sin(phase * 1.4) * width * 0.3, cy, Math.max(width, height) * 0.7, '#ffffff', 0.26, 'difference'); paintBlob(cx - width * 0.28, cy + Math.cos(phase) * height * 0.25, Math.max(width, height) * 0.48, '#ff4f9a', 0.2, 'difference'); }
+  if (effects.includes('invertCascade')) { paintField(phase * 0.7, 0.2, 'difference'); paintBlob(cx + Math.sin(phase * 1.4) * width * 0.3, cy, Math.max(width, height) * 0.7, '#ffffff', 0.12, 'difference'); paintBlob(cx - width * 0.28, cy + Math.cos(phase) * height * 0.25, Math.max(width, height) * 0.48, '#ff4f9a', 0.1, 'difference'); }
   ctx.restore();
 };
 
