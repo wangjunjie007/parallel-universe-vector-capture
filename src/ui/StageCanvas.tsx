@@ -176,17 +176,26 @@ const drawRegionEffects = (ctx: CanvasRenderingContext2D, corners: OverlayPositi
     const blob = ctx.createRadialGradient(x, y, 0, x, y, radius); blob.addColorStop(0, color); blob.addColorStop(0.45, `${color}aa`); blob.addColorStop(1, `${color}00`);
     ctx.fillStyle = blob; ctx.fillRect(left, top, width, height); ctx.restore();
   };
-  paintField(0, 0.28);
-  if (effects.includes('aurora')) { paintBlob(cx + Math.sin(phase) * width * 0.38, cy - height * 0.2, Math.max(width, height) * 0.8, '#55f7c8', 0.34); paintBlob(cx - width * 0.3, cy + Math.cos(phase * 0.8) * height * 0.3, Math.max(width, height) * 0.72, '#8d6bff', 0.3); paintBlob(cx + width * 0.25, cy + height * 0.25, Math.max(width, height) * 0.58, '#ff537d', 0.24); }
-  if (effects.includes('prismatic')) { paintField(1.9, 0.24, 'screen'); paintBlob(cx + Math.cos(phase * 1.3) * width * 0.28, cy, Math.max(width, height) * 0.62, '#fff36a', 0.2); paintBlob(cx - width * 0.25, cy + Math.sin(phase) * height * 0.32, Math.max(width, height) * 0.56, '#58d9ff', 0.22); }
-  if (effects.includes('energyBloom')) { for (let i = 0; i < 5; i += 1) paintBlob(cx + Math.cos(phase + i * 1.25) * width * 0.34, cy + Math.sin(phase * 0.9 + i) * height * 0.34, Math.max(width, height) * (0.35 + i * 0.08), palette[i % 3], 0.12); }
-  if (effects.includes('liquidChromatic')) { paintBlob(left + width * (0.2 + 0.15 * Math.sin(phase)), top + height * 0.35, Math.max(width, height) * 0.65, '#ff317f', 0.24, 'overlay'); paintBlob(left + width * 0.78, top + height * (0.62 + 0.16 * Math.cos(phase)), Math.max(width, height) * 0.7, '#26f1ff', 0.22, 'overlay'); }
+  // The visual language follows the open-source LiquidGlass shader approach: transparent
+  // refraction-like passes, animated color matrices and chromatic separation, rather than
+  // opaque stripes or a single static filter.
+  paintField(0, 0.42);
+  const colorPass = (filter: string, alpha: number, mode: GlobalCompositeOperation = 'screen') => {
+    ctx.save(); ctx.globalCompositeOperation = mode; ctx.globalAlpha = alpha; ctx.filter = filter;
+    const gradient = ctx.createLinearGradient(left + Math.sin(phase * 1.7) * width, top + height, left + width, top - Math.cos(phase * 1.2) * height);
+    gradient.addColorStop(0, palette[0]); gradient.addColorStop(0.28, palette[1]); gradient.addColorStop(0.58, palette[2]); gradient.addColorStop(1, '#f8fbff');
+    ctx.fillStyle = gradient; ctx.fillRect(left - width * 0.15, top - height * 0.15, width * 1.3, height * 1.3); ctx.restore();
+  };
+  if (effects.includes('aurora')) { colorPass(`hue-rotate(${Math.sin(phase) * 80}deg) saturate(2.3) contrast(1.35)`, 0.34); colorPass(`blur(${Math.max(2, width * 0.025)}px) hue-rotate(${phase * 38}deg) saturate(2.8)`, 0.2, 'overlay'); }
+  if (effects.includes('prismatic')) { colorPass(`hue-rotate(${phase * 72}deg) saturate(3.8) contrast(1.5)`, 0.32, 'screen'); colorPass(`blur(${Math.max(1, width * 0.012)}px) hue-rotate(${180 + phase * 44}deg)`, 0.22, 'difference'); }
+  if (effects.includes('energyBloom')) { colorPass(`blur(${Math.max(3, width * 0.06)}px) saturate(4) brightness(1.35) hue-rotate(${phase * 55}deg)`, 0.28, 'screen'); colorPass(`contrast(2.2) saturate(3.2) hue-rotate(${phase * -90}deg)`, 0.18, 'lighter'); }
+  if (effects.includes('liquidChromatic')) { colorPass(`blur(${Math.max(1, width * 0.018)}px) hue-rotate(${phase * 120}deg) saturate(4)`, 0.3, 'overlay'); colorPass(`hue-rotate(${180 - phase * 90}deg) saturate(3.5) contrast(1.6)`, 0.22, 'screen'); }
   if (effects.includes('kaleido')) {
-    ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = 0.16; ctx.translate(cx, cy); ctx.rotate(Math.sin(phase) * 0.18);
+    ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = 0.24; ctx.filter = `saturate(2.8) contrast(1.45) hue-rotate(${phase * 50}deg)`; ctx.translate(cx, cy); ctx.rotate(Math.sin(phase) * 0.18);
     for (let i = 0; i < 6; i += 1) { ctx.rotate(Math.PI / 3); ctx.fillStyle = palette[i % 3]; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(width * 0.7, height * 0.12); ctx.lineTo(width * 0.18, height * 0.62); ctx.closePath(); ctx.fill(); }
     ctx.restore();
   }
-  if (effects.includes('invertCascade')) { paintField(phase * 0.7, 0.2, 'difference'); paintBlob(cx + Math.sin(phase * 1.4) * width * 0.3, cy, Math.max(width, height) * 0.7, '#ffffff', 0.12, 'difference'); paintBlob(cx - width * 0.28, cy + Math.cos(phase) * height * 0.25, Math.max(width, height) * 0.48, '#ff4f9a', 0.1, 'difference'); }
+  if (effects.includes('invertCascade')) { colorPass(`invert(1) hue-rotate(${phase * 110}deg) saturate(2.5) contrast(1.7)`, 0.28, 'difference'); colorPass(`invert(1) blur(${Math.max(1, width * 0.01)}px) hue-rotate(${180 - phase * 65}deg)`, 0.18, 'exclusion'); }
   ctx.restore();
 };
 
