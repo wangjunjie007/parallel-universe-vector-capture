@@ -242,7 +242,7 @@ export function StageCanvas({
           className={`stage-video ${mirror ? 'is-mirrored' : ''}`}
           ref={videoRef}
           muted
-          autoPlay
+          autoPlay={!replay?.ready}
           playsInline
           onLoadedMetadata={onVideoMetadata}
           onError={onVideoError}
