@@ -181,7 +181,7 @@ function uiPoint(side: HandId, finger: FingerName, x: number, y: number, width: 
   return { side, finger, x, y, nx: width > 0 ? x / width : undefined, ny: height > 0 ? y / height : undefined, interpolated };
 }
 
-function buildOverlay(frames: readonly SemanticFrame[], width: number, height: number, sourceFrame?: number, sourceTime?: number): OverlaySnapshot {
+function buildOverlay(frames: readonly SemanticFrame[], width: number, height: number, sourceFrame?: number, sourceTime?: number, smooth = false): OverlaySnapshot {
   let current = frames.at(-1);
   if (frames.length > 0 && (sourceFrame !== undefined || sourceTime !== undefined)) {
     const target = sourceTime ?? sourceFrame ?? 0;
@@ -206,7 +206,24 @@ function buildOverlay(frames: readonly SemanticFrame[], width: number, height: n
       const point = semanticById.get(`${side}:${finger}`);
       if (!point) continue;
       const trail = recent.flatMap((frame) => frame.extendedPoints.filter((item) => item.side === side && item.finger === finger).map((item) => ({ x: item.x, y: item.y, nx: width > 0 ? item.x / width : undefined, ny: height > 0 ? item.y / height : undefined })));
-      points.push({ ...uiPoint(side, finger, point.x, point.y, width, height, current.flags.interpolated), trail });
+      let displayPoint = point;
+      if (smooth) {
+        const prior = recent
+          .slice(0, -1)
+          .slice(-4)
+          .reverse()
+          .map((frame, index) => ({ point: frame.extendedPoints.find((item) => item.side === side && item.finger === finger), weight: 0.32 ** (index + 1) }))
+          .filter((entry): entry is { point: typeof point; weight: number } => Boolean(entry.point));
+        const weight = prior.reduce((sum, entry) => sum + entry.weight, 0);
+        if (weight > 0) {
+          displayPoint = {
+            ...point,
+            x: (point.x + prior.reduce((sum, entry) => sum + entry.point.x * entry.weight, 0)) / (1 + weight),
+            y: (point.y + prior.reduce((sum, entry) => sum + entry.point.y * entry.weight, 0)) / (1 + weight),
+          };
+        }
+      }
+      points.push({ ...uiPoint(side, finger, displayPoint.x, displayPoint.y, width, height, current.flags.interpolated), trail });
     }
     if (palm || points.length > 0) {
       const palmTrail = recent.flatMap((frame) => frame.palms.filter((item) => item.side === side && item.visible).map((item) => ({ x: item.x, y: item.y, nx: width > 0 ? item.x / width : undefined, ny: height > 0 ? item.y / height : undefined })));
@@ -533,7 +550,7 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     diagnosticsRef.current.ingestRaw(raw);
     if (semantic) diagnosticsRef.current.ingestSemantic(semantic);
     patchSnapshot((current) => ({
-      overlay: semantic ? buildOverlay(trajectoryRef.current.getSemanticFrames(), output.width, output.height, output.frame, output.time) : current.overlay,
+      overlay: semantic ? buildOverlay(trajectoryRef.current.getSemanticFrames(), output.width, output.height, output.frame, output.time, inferenceModeRef.current === 'realtime') : current.overlay,
       metrics: {
         ...current.metrics,
         inferenceMs: output.inferenceMs,

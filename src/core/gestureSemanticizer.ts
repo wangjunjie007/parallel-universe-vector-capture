@@ -77,6 +77,16 @@ function landmark(hand: TrackedHand, index: number): Point2D | undefined {
   return item ? { x: item.source.x, y: item.source.y } : undefined;
 }
 
+interface Point3D extends Point2D { z: number }
+
+function landmark3d(hand: TrackedHand, index: number): Point3D | undefined {
+  const item = hand.landmarks.find((entry) => entry.index === index) ?? hand.landmarks[index];
+  if (!item) return undefined;
+  // MediaPipe z is normalized to roughly the same hand scale as x. Convert it
+  // to source-pixel units so foreshortened fingers can use the detector's depth.
+  return { x: item.source.x, y: item.source.y, z: (item.normalized.z ?? 0) * Math.max(hand.palmScale, 1) };
+}
+
 function angleAt(a: Point2D, vertex: Point2D, b: Point2D): number {
   const ax = a.x - vertex.x;
   const ay = a.y - vertex.y;
@@ -88,6 +98,23 @@ function angleAt(a: Point2D, vertex: Point2D, b: Point2D): number {
   return (Math.acos(cosine) * 180) / Math.PI;
 }
 
+function distance3d(a: Point3D, b: Point3D): number {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+function angleAt3d(a: Point3D, vertex: Point3D, b: Point3D): number {
+  const ax = a.x - vertex.x;
+  const ay = a.y - vertex.y;
+  const az = a.z - vertex.z;
+  const bx = b.x - vertex.x;
+  const by = b.y - vertex.y;
+  const bz = b.z - vertex.z;
+  const denominator = Math.hypot(ax, ay, az) * Math.hypot(bx, by, bz);
+  if (denominator < 1e-6) return 0;
+  const cosine = Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / denominator));
+  return (Math.acos(cosine) * 180) / Math.PI;
+}
+
 function fingerTip(hand: TrackedHand, finger: FingerName): Point2D | undefined {
   const index = LANDMARK_INDEX[`${finger}_tip` as keyof typeof LANDMARK_INDEX];
   return typeof index === 'number' ? landmark(hand, index) : undefined;
@@ -96,25 +123,39 @@ function fingerTip(hand: TrackedHand, finger: FingerName): Point2D | undefined {
 function fingerExtended(hand: TrackedHand, finger: FingerName, palmScale: number): boolean {
   const wrist = landmark(hand, LANDMARK_INDEX.wrist);
   const tip = fingerTip(hand, finger);
+  const wrist3d = landmark3d(hand, LANDMARK_INDEX.wrist);
+  const tip3d = landmark3d(hand, LANDMARK_INDEX[`${finger}_tip` as keyof typeof LANDMARK_INDEX]);
   if (!wrist || !tip) return false;
   const scale = Math.max(palmScale, 1);
   if (finger === 'thumb') {
     const mcp = landmark(hand, LANDMARK_INDEX.thumb_mcp);
     const ip = landmark(hand, LANDMARK_INDEX.thumb_ip);
+    const mcp3d = landmark3d(hand, LANDMARK_INDEX.thumb_mcp);
+    const ip3d = landmark3d(hand, LANDMARK_INDEX.thumb_ip);
     if (!mcp || !ip) return false;
     const reach = distance(wrist, tip) / scale;
     const angle = angleAt(mcp, ip, tip);
-    return reach > 1.15 && angle > 125;
+    const depthReach = wrist3d && tip3d ? distance3d(wrist3d, tip3d) / scale : 0;
+    const depthAngle = mcp3d && ip3d && tip3d ? angleAt3d(mcp3d, ip3d, tip3d) : 0;
+    return (reach > 1.15 && angle > 125) || (depthReach > 1.2 && depthAngle > 120);
   }
   const prefix = finger === 'index' ? 'index' : finger === 'middle' ? 'middle' : finger === 'ring' ? 'ring' : 'little';
   const mcp = landmark(hand, LANDMARK_INDEX[`${prefix}_mcp` as keyof typeof LANDMARK_INDEX]);
   const pip = landmark(hand, LANDMARK_INDEX[`${prefix}_pip` as keyof typeof LANDMARK_INDEX]);
   const dip = landmark(hand, LANDMARK_INDEX[`${prefix}_dip` as keyof typeof LANDMARK_INDEX]);
+  const mcp3d = landmark3d(hand, LANDMARK_INDEX[`${prefix}_mcp` as keyof typeof LANDMARK_INDEX]);
+  const pip3d = landmark3d(hand, LANDMARK_INDEX[`${prefix}_pip` as keyof typeof LANDMARK_INDEX]);
+  const dip3d = landmark3d(hand, LANDMARK_INDEX[`${prefix}_dip` as keyof typeof LANDMARK_INDEX]);
+  const tip3dFinger = landmark3d(hand, LANDMARK_INDEX[`${prefix}_tip` as keyof typeof LANDMARK_INDEX]);
   if (!mcp || !pip || !dip) return false;
   const reach = distance(wrist, tip) / scale;
   const pipAngle = angleAt(mcp, pip, dip);
   const dipAngle = angleAt(pip, dip, tip);
-  return reach > 1.28 && pipAngle > 145 && dipAngle > 145;
+  const depthReach = wrist3d && tip3d ? distance3d(wrist3d, tip3d) / scale : 0;
+  const depthPipAngle = mcp3d && pip3d && dip3d ? angleAt3d(mcp3d, pip3d, dip3d) : 0;
+  const depthDipAngle = pip3d && dip3d && tip3dFinger ? angleAt3d(pip3d, dip3d, tip3dFinger) : 0;
+  return (reach > 1.28 && pipAngle > 145 && dipAngle > 145)
+    || (depthReach > 1.3 && depthPipAngle > 135 && depthDipAngle > 135);
 }
 
 function allFalse<T extends Record<FingerName, boolean>>(values: T): boolean {

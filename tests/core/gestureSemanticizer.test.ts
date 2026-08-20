@@ -11,6 +11,19 @@ function runFrame(tracker: IdentityTracker, processor: ReturnType<typeof createS
 }
 
 describe('SemanticProcessor', () => {
+  it('uses landmark depth when an extended finger points directly at the camera', () => {
+    const hand = makeHand({ gesture: 'open' });
+    for (const index of [5, 6, 7, 8]) {
+      const landmark = hand.landmarks[index];
+      landmark.source = { x: 320, y: 260 };
+      landmark.normalized = { x: 0.25, y: 0.36, z: -(index - 4) * 0.7 };
+    }
+    const tracker = new IdentityTracker();
+    const identity = tracker.update(makeIdentityFrame(0, [hand]));
+    const evidence = createSemanticProcessor().classify(identity.hands[0]);
+    expect(evidence.extendedRaw.index).toBe(true);
+  });
+
   it('confirms both-hand pinch after six frames and emits strict four points', () => {
     const tracker = new IdentityTracker();
     const processor = createSemanticProcessor();
