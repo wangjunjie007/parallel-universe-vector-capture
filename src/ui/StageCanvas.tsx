@@ -172,12 +172,14 @@ export function StageCanvas({
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    video.style.setProperty('transform', mirror ? 'scaleX(-1)' : 'none', 'important');
+    video.style.transformOrigin = 'center center';
     if (videoStream && video.srcObject !== videoStream) video.srcObject = videoStream;
     if (!videoStream && video.srcObject) video.srcObject = null;
     if (videoUrl && video.src !== videoUrl) video.src = videoUrl;
     if (!videoUrl && source.kind !== 'file' && source.kind !== 'recording') video.removeAttribute('src');
     if ((videoStream || videoUrl) && !replay?.ready) void video.play().catch(() => undefined);
-  }, [source.kind, videoRef, videoStream, videoUrl, replay?.ready]);
+  }, [mirror, source.kind, videoRef, videoStream, videoUrl, replay?.ready]);
 
   useEffect(() => {
     const video = videoRef.current;
