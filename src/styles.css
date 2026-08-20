@@ -595,7 +595,6 @@ a {
   gap: 9px;
   margin-top: 16px;
 }
-
 .action-button,
 .export-button {
   display: flex;
@@ -838,6 +837,46 @@ a {
   color: var(--quiet);
   font-size: 9px;
 }
+
+.stage-effects-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.stage-effects-button:hover,
+.stage-effects-button[aria-expanded="true"] { border-color: var(--mint); color: var(--mint); }
+
+.stage-visual-panel {
+  position: absolute;
+  z-index: 5;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  gap: 9px;
+  width: min(300px, calc(100% - 20px));
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(10, 21, 23, 0.96);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .38);
+  backdrop-filter: blur(10px);
+}
+
+.stage-visual-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text); font-size: 11px; }
+.visual-controls-title { color: var(--muted); font-size: 10px; font-weight: 750; }
+.visual-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.visual-options label { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--quiet); font-size: 10px; line-height: 1.25; cursor: pointer; }
+.visual-options label:has(input:checked) { color: var(--mint); }
+.visual-options input { accent-color: var(--mint-strong); }
 
 .live-indicator {
   width: 6px;
@@ -1749,8 +1788,10 @@ a {
   }
 
   .stage-toolbar-meta {
-    display: none;
+    display: flex;
   }
+
+  .stage-toolbar-meta > span { display: none; }
 
   .stage-footnote {
     align-items: flex-start;

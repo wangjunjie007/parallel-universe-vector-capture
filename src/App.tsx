@@ -28,7 +28,7 @@ import { CapabilityPanel } from './ui/CapabilityPanel';
 import { DiagnosticsPanel } from './ui/DiagnosticsPanel';
 import { ExportPanel } from './ui/ExportPanel';
 import { PrivacyDialog } from './ui/PrivacyDialog';
-import { StageCanvas } from './ui/StageCanvas';
+import { StageCanvas, type ConnectionStyle, type OverlayVisualConfig, type RegionEffect } from './ui/StageCanvas';
 import { TelemetryPanel } from './ui/TelemetryPanel';
 import { getInitialLanguage, t } from './ui/i18n';
 import type {
@@ -1349,6 +1349,7 @@ export default function App({ controller: externalController, initialLanguage }:
   const videoRef = controller.videoRef ?? localController.videoRef;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(true);
+  const [visualConfig, setVisualConfig] = useState<OverlayVisualConfig>({ connections: ['portal'], effects: ['prism'] });
   const lang = snapshot.language;
   const isProcessing = snapshot.phase === 'processing';
   const isLive = snapshot.mode === 'live';
@@ -1367,6 +1368,11 @@ export default function App({ controller: externalController, initialLanguage }:
   }, [externalController, localController]);
 
   const openFilePicker = () => fileInputRef.current?.click();
+  const toggleVisual = (kind: 'connections' | 'effects', value: ConnectionStyle | RegionEffect) => setVisualConfig((current) => {
+    const values = current[kind] as string[];
+    const next = values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+    return { ...current, [kind]: next } as OverlayVisualConfig;
+  });
 
   return (
     <div className="app-shell">
@@ -1439,7 +1445,7 @@ export default function App({ controller: externalController, initialLanguage }:
           </aside>
 
           <div className="center-stage">
-            <StageCanvas language={lang} source={snapshot.source} overlay={snapshot.overlay} phase={snapshot.phase} mirror={snapshot.source.mirrored} videoStream={controller.videoStream} videoUrl={controller.videoUrl} videoRef={videoRef} onVideoMetadata={handleVideoMetadata} onVideoError={() => actions.setPrivacyOpen(false)} replay={controller.replay ?? snapshot.replay} replayActions={{ playReplay: actions.playReplay ?? (() => undefined), pauseReplay: actions.pauseReplay ?? (() => undefined), restartReplay: actions.restartReplay ?? (() => undefined), seekReplay: actions.seekReplay ?? (() => undefined), stepReplay: actions.stepReplay ?? (() => undefined), ...controller.replayActions }} onReplayTime={controller.onReplayTime} />
+            <StageCanvas language={lang} source={snapshot.source} overlay={snapshot.overlay} phase={snapshot.phase} mirror={snapshot.source.mirrored} videoStream={controller.videoStream} videoUrl={controller.videoUrl} videoRef={videoRef} onVideoMetadata={handleVideoMetadata} onVideoError={() => actions.setPrivacyOpen(false)} replay={controller.replay ?? snapshot.replay} replayActions={{ playReplay: actions.playReplay ?? (() => undefined), pauseReplay: actions.pauseReplay ?? (() => undefined), restartReplay: actions.restartReplay ?? (() => undefined), seekReplay: actions.seekReplay ?? (() => undefined), stepReplay: actions.stepReplay ?? (() => undefined), ...controller.replayActions }} onReplayTime={controller.onReplayTime} visualConfig={visualConfig} onVisualConfigChange={toggleVisual} />
             <div className="stage-legend" aria-label={lang === 'zh' ? '叠加层图例' : 'Overlay legend'}>
               <span><i className="legend-swatch swatch-palm" />{lang === 'zh' ? '掌心 / 方向' : 'Palm / orientation'}</span>
               <span><i className="legend-swatch swatch-h1" />{t(lang, 'hand1')}</span>

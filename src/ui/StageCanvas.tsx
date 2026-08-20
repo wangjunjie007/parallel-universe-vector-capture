@@ -1,9 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { RefObject, SyntheticEvent } from 'react';
-import { Crosshair, EyeOff, Hand, Pause, Play, RotateCcw, ScanLine, StepBack, StepForward } from 'lucide-react';
+import { Crosshair, EyeOff, Hand, Pause, Play, RotateCcw, ScanLine, Settings2, StepBack, StepForward, X } from 'lucide-react';
 import type { CapturePhase, Language, OverlaySnapshot, ReplayActions, ReplaySnapshot, SourceSnapshot, UiHand, UiPoint, UiVector } from './types';
 import { formatNumber } from './format';
 import { t } from './i18n';
+
+export type ConnectionStyle = 'portal' | 'fingers' | 'bridges' | 'mesh';
+export type RegionEffect = 'prism' | 'scanlines' | 'neon' | 'invert';
+export interface OverlayVisualConfig { connections: ConnectionStyle[]; effects: RegionEffect[] }
 
 interface StageCanvasProps {
   language: Language;
@@ -20,6 +24,8 @@ interface StageCanvasProps {
   replayActions?: Partial<ReplayActions>;
   /** Called with the media clock as the visible video advances or seeks. */
   onReplayTime?: (time: number) => void;
+  visualConfig: OverlayVisualConfig;
+  onVisualConfigChange: (kind: 'connections' | 'effects', value: ConnectionStyle | RegionEffect) => void;
 }
 
 const handColors: Record<UiHand['side'], string> = {
@@ -38,6 +44,9 @@ const fingerColors: Record<UiPoint['finger'], string> = {
 // Pinch coordinates intentionally stay almost coincident for semantic/export fidelity.
 // Give the two overlay markers a small visual gap so they remain individually readable.
 const MIN_PINCH_MARKER_GAP = 10;
+
+const connectionColors: Record<ConnectionStyle, string> = { portal: '#91e7c2', fingers: '#8bd3dd', bridges: '#ffd166', mesh: '#c6a7ff' };
+const fingerOrder: UiPoint['finger'][] = ['thumb', 'index', 'middle', 'ring', 'little'];
 
 const pointPosition = (point: UiVector, width: number, height: number, sourceWidth: number, sourceHeight: number, mirror: boolean) => {
   const rawX = point.nx !== undefined ? point.nx * width : (sourceWidth > 0 ? (point.x / sourceWidth) * width : point.x);
@@ -127,7 +136,26 @@ const drawHand = (ctx: CanvasRenderingContext2D, hand: UiHand, width: number, he
   });
 };
 
-function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: OverlaySnapshot, source: SourceSnapshot, mirror: boolean) {
+const drawConnection = (ctx: CanvasRenderingContext2D, from: { x: number; y: number }, to: { x: number; y: number }, style: ConnectionStyle) => {
+  ctx.save(); ctx.strokeStyle = connectionColors[style]; ctx.globalAlpha = style === 'mesh' ? 0.22 : 0.7;
+  ctx.lineWidth = style === 'portal' ? 2.1 : style === 'mesh' ? 0.8 : 1.25;
+  if (style === 'fingers') ctx.setLineDash([5, 4]);
+  if (style === 'bridges') ctx.setLineDash([2, 5]);
+  ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke(); ctx.restore();
+};
+
+const drawRegionEffects = (ctx: CanvasRenderingContext2D, corners: { x: number; y: number }[], effects: RegionEffect[]) => {
+  if (corners.length !== 4 || effects.length === 0) return;
+  ctx.save(); ctx.beginPath(); corners.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)); ctx.closePath(); ctx.clip();
+  const xs = corners.map((p) => p.x); const ys = corners.map((p) => p.y); const left = Math.min(...xs); const top = Math.min(...ys); const width = Math.max(...xs) - left; const height = Math.max(...ys) - top;
+  if (effects.includes('prism')) { const gradient = ctx.createLinearGradient(left, top, left + width, top + height); gradient.addColorStop(0, 'rgba(70,217,160,.18)'); gradient.addColorStop(.5, 'rgba(198,167,255,.12)'); gradient.addColorStop(1, 'rgba(255,157,131,.18)'); ctx.fillStyle = gradient; ctx.fillRect(left, top, width, height); }
+  if (effects.includes('scanlines')) { ctx.strokeStyle = 'rgba(145,231,194,.28)'; ctx.lineWidth = 1; for (let y = top; y < top + height; y += 6) { ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + width, y); ctx.stroke(); } }
+  if (effects.includes('neon')) { ctx.shadowColor = '#46d9a0'; ctx.shadowBlur = 18; ctx.strokeStyle = 'rgba(145,231,194,.75)'; ctx.lineWidth = 2; ctx.strokeRect(left, top, width, height); }
+  if (effects.includes('invert')) { ctx.globalCompositeOperation = 'difference'; ctx.fillStyle = 'rgba(255,255,255,.16)'; ctx.fillRect(left, top, width, height); }
+  ctx.restore();
+};
+
+function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: OverlaySnapshot, source: SourceSnapshot, mirror: boolean, visualConfig: OverlayVisualConfig) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -148,6 +176,16 @@ function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: Over
       ctx.clearRect(0, 0, width, height);
       const sourceWidth = source.width || overlay.width || 1;
       const sourceHeight = source.height || overlay.height || 1;
+      const positions = new Map<string, { x: number; y: number }>();
+      overlay.hands.forEach((hand) => hand.points.forEach((point) => { if (point.visible !== false) positions.set(`${point.side}:${point.finger}`, pointPosition(point, width, height, sourceWidth, sourceHeight, mirror)); }));
+      const get = (id: string) => positions.get(id);
+      if (visualConfig.connections.includes('portal')) {
+        const corners = ['hand_1:thumb', 'hand_1:index', 'hand_2:index', 'hand_2:thumb'].map(get).filter((p): p is { x: number; y: number } => Boolean(p));
+        if (corners.length === 4) { corners.forEach((p, i) => drawConnection(ctx, p, corners[(i + 1) % corners.length], 'portal')); drawRegionEffects(ctx, corners, visualConfig.effects); }
+      }
+      if (visualConfig.connections.includes('fingers')) overlay.hands.forEach((hand) => { const points = fingerOrder.map((finger) => get(`${hand.side}:${finger}`)).filter((p): p is { x: number; y: number } => Boolean(p)); points.forEach((p, i) => { if (i) drawConnection(ctx, points[i - 1], p, 'fingers'); }); });
+      if (visualConfig.connections.includes('bridges')) fingerOrder.forEach((finger) => { const left = get(`hand_1:${finger}`); const right = get(`hand_2:${finger}`); if (left && right) drawConnection(ctx, left, right, 'bridges'); });
+      if (visualConfig.connections.includes('mesh')) { const points = [...positions.values()]; points.forEach((p, i) => points.slice(i + 1).forEach((other) => drawConnection(ctx, p, other, 'mesh'))); }
       overlay.hands.forEach((hand) => drawHand(ctx, hand, width, height, sourceWidth, sourceHeight, mirror));
       if (overlay.hands.length > 0) {
         ctx.save();
@@ -173,7 +211,7 @@ function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: Over
     const observer = new ResizeObserver(draw);
     observer.observe(host);
     return () => observer.disconnect();
-  }, [canvasRef, mirror, overlay, source]);
+  }, [canvasRef, mirror, overlay, source, visualConfig]);
 }
 
 export function StageCanvas({
@@ -190,9 +228,12 @@ export function StageCanvas({
   replay,
   replayActions,
   onReplayTime,
+  visualConfig,
+  onVisualConfigChange,
 }: StageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  useCanvasDrawing(canvasRef, overlay, source, mirror);
+  const [visualPanelOpen, setVisualPanelOpen] = useState(false);
+  useCanvasDrawing(canvasRef, overlay, source, mirror, visualConfig);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -262,9 +303,17 @@ export function StageCanvas({
           <span>{source.width > 0 ? `${source.width} × ${source.height}` : '—'}</span>
           <span aria-hidden="true">·</span>
           <span>{overlay.semanticCount} {t(language, 'count')}</span>
+          <button type="button" className="stage-effects-button" onClick={() => setVisualPanelOpen((open) => !open)} aria-expanded={visualPanelOpen} aria-label={language === 'zh' ? '打开连线与特效设置' : 'Open connection and effect settings'} title={language === 'zh' ? '连线与特效' : 'Connections and effects'}><Settings2 size={14} /><span>{language === 'zh' ? '连线 / 特效' : 'Lines / FX'}</span></button>
         </div>
       </div>
       <div className={`stage-viewport ${hasSource ? 'has-source' : 'is-empty'} phase-${phase}`} style={{ aspectRatio }}>
+        {visualPanelOpen ? <div className="stage-visual-panel" role="dialog" aria-label={language === 'zh' ? '连线与区域特效' : 'Connections and region effects'}>
+          <div className="stage-visual-panel-heading"><strong>{language === 'zh' ? '连线与区域特效' : 'Connections and region effects'}</strong><button type="button" className="icon-button" onClick={() => setVisualPanelOpen(false)} aria-label={language === 'zh' ? '关闭设置' : 'Close settings'} title={language === 'zh' ? '关闭' : 'Close'}><X size={14} /></button></div>
+          <div className="visual-controls-title">{language === 'zh' ? '连线样式（可多选）' : 'Connection styles (multi-select)'}</div>
+          <div className="visual-options">{([['portal', language === 'zh' ? '门户外框' : 'Portal frame'], ['fingers', language === 'zh' ? '手指链' : 'Finger chains'], ['bridges', language === 'zh' ? '同名桥接' : 'Matching bridges'], ['mesh', language === 'zh' ? '全连接网格' : 'Complete mesh']] as [ConnectionStyle, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.connections.includes(value)} onChange={() => onVisualConfigChange('connections', value)} /><span>{label}</span></label>)}</div>
+          <div className="visual-controls-title">{language === 'zh' ? '矩形区域特效（可多选）' : 'Rectangle effects (multi-select)'}</div>
+          <div className="visual-options">{([['prism', language === 'zh' ? '棱镜色散' : 'Prism'], ['scanlines', language === 'zh' ? '扫描线' : 'Scanlines'], ['neon', language === 'zh' ? '霓虹辉光' : 'Neon glow'], ['invert', language === 'zh' ? '反相闪烁' : 'Invert flash']] as [RegionEffect, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.effects.includes(value)} onChange={() => onVisualConfigChange('effects', value)} /><span>{label}</span></label>)}</div>
+        </div> : null}
         <video
           className={`stage-video ${mirror ? 'is-mirrored' : ''}`}
           style={{ transform: mirror ? 'scaleX(-1)' : 'none' }}
