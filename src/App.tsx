@@ -42,6 +42,8 @@ import type {
   DiagnosticItem,
   Language,
   PermissionState,
+  ReplayActions,
+  ReplaySnapshot,
 } from './ui/types';
 import type { UiHand, UiPoint, OverlaySnapshot } from './ui/types';
 import { CameraSession, cameraErrorMessage, isCameraSecureContext } from './runtime/cameraSession';
@@ -180,7 +182,19 @@ function uiPoint(side: HandId, finger: FingerName, x: number, y: number, width: 
 }
 
 function buildOverlay(frames: readonly SemanticFrame[], width: number, height: number, sourceFrame?: number, sourceTime?: number): OverlaySnapshot {
-  const current = frames.at(-1);
+  let current = frames.at(-1);
+  if (frames.length > 0 && (sourceFrame !== undefined || sourceTime !== undefined)) {
+    const target = sourceTime ?? sourceFrame ?? 0;
+    let low = 0;
+    let high = frames.length - 1;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      const value = sourceTime !== undefined ? frames[mid].time : frames[mid].frame;
+      if (value <= target) low = mid;
+      else high = mid - 1;
+    }
+    current = frames[low];
+  }
   if (!current) return { width, height, hands: [], semanticCount: 0, isSample: false, sourceFrame, sourceTime };
   const bySide = new Map<HandId, UiHand>();
   const semanticById = new Map(current.extendedPoints.map((point) => [`${point.side}:${point.finger}`, point]));
@@ -253,12 +267,75 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
   const liveFrameRef = useRef(0);
   const liveWindowRef = useRef({ startedAt: 0, frames: 0 });
   const capabilityDiagnosticsRef = useRef<DiagnosticItem[]>([]);
+  const replayFramesRef = useRef<SemanticFrame[]>([]);
+  const replayRef = useRef<ReplaySnapshot>({ ready: false, currentTime: 0, duration: 0, playing: false });
   const modeRef = useRef<CaptureMode>(snapshot.mode);
   modeRef.current = snapshot.mode;
-
   const patchSnapshot = useCallback((patch: Partial<CaptureUiSnapshot> | ((current: CaptureUiSnapshot) => Partial<CaptureUiSnapshot>)) => {
     setSnapshot((current) => ({ ...current, ...(typeof patch === 'function' ? patch(current) : patch) }));
   }, []);
+
+  const replayFlags = useCallback((frame?: SemanticFrame): string[] => {
+    if (!frame) return [];
+    const flags: string[] = [];
+    if (frame.flags.identityAmbiguous) flags.push('identity_ambiguous');
+    if (frame.flags.needsReview) flags.push('needs_review');
+    if (frame.flags.interpolated) flags.push('interpolated');
+    if (frame.flags.longGap) flags.push('long_gap');
+    if (frame.flags.identityReset?.length) flags.push('identity_reset');
+    if (frame.flags.errors?.length) flags.push('errors');
+    return flags;
+  }, []);
+
+  const updateReplayAtTime = useCallback((time: number) => {
+    const frames = replayFramesRef.current;
+    const duration = replayRef.current.duration;
+    const clamped = Math.min(Math.max(Number.isFinite(time) ? time : 0, 0), duration || Number.MAX_SAFE_INTEGER);
+    const current = frames.length ? (() => {
+      let low = 0; let high = frames.length - 1;
+      while (low < high) { const mid = Math.ceil((low + high) / 2); if (frames[mid].time <= clamped) low = mid; else high = mid - 1; }
+      return frames[low];
+    })() : undefined;
+    replayRef.current = { ...replayRef.current, currentTime: clamped, currentFrame: current?.frame, flags: replayFlags(current) };
+    patchSnapshot({ overlay: current ? buildOverlay(frames, current.width, current.height, current.frame, current.time) : initialOverlay(), replay: replayRef.current });
+  }, [patchSnapshot, replayFlags]);
+
+  const playReplay = useCallback(async () => {
+    const video = videoRef.current;
+    if (!replayRef.current.ready || !video) return;
+    try { await video.play(); } catch { return; }
+    replayRef.current = { ...replayRef.current, playing: true };
+    patchSnapshot({ replay: replayRef.current });
+  }, [patchSnapshot]);
+
+  const pauseReplay = useCallback(() => {
+    videoRef.current?.pause();
+    replayRef.current = { ...replayRef.current, playing: false };
+    patchSnapshot({ replay: replayRef.current });
+  }, [patchSnapshot]);
+
+  const seekReplay = useCallback((time: number) => {
+    if (!replayRef.current.ready) return;
+    const next = Math.min(Math.max(time, 0), replayRef.current.duration);
+    if (videoRef.current) videoRef.current.currentTime = next;
+    updateReplayAtTime(next);
+  }, [updateReplayAtTime]);
+
+  const restartReplay = useCallback(async () => {
+    seekReplay(0);
+    await playReplay();
+  }, [playReplay, seekReplay]);
+
+  const stepReplay = useCallback((direction: -1 | 1) => {
+    const frames = replayFramesRef.current;
+    if (!frames.length) return;
+    const currentIndex = Math.max(0, frames.findIndex((frame) => frame.frame === replayRef.current.currentFrame));
+    const next = frames[Math.min(frames.length - 1, Math.max(0, currentIndex + direction))];
+    pauseReplay();
+    seekReplay(next.time);
+  }, [pauseReplay, seekReplay]);
+
+  const replayActions: ReplayActions = useMemo(() => ({ playReplay, pauseReplay, restartReplay, seekReplay, stepReplay }), [pauseReplay, playReplay, restartReplay, seekReplay, stepReplay]);
 
   const publishDiagnostics = useCallback(() => {
     const events = diagnosticsRef.current.snapshot().events;
@@ -538,6 +615,8 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
   const resetLiveCaptureState = useCallback((width = snapshot.source.width, height = snapshot.source.height) => {
     invalidateLive();
     trajectoryRef.current.clear();
+    replayFramesRef.current = [];
+    replayRef.current = { ready: false, currentTime: 0, duration: 0, playing: false };
     diagnosticsRef.current.clear();
     exportRef.current = null;
     liveFrameRef.current = 0;
@@ -786,6 +865,8 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     revokeVideoUrl();
     stopCamera();
     trajectoryRef.current.clear();
+    replayFramesRef.current = [];
+    replayRef.current = { ready: false, currentTime: 0, duration: 0, playing: false };
     diagnosticsRef.current.clear();
     exportRef.current = null;
     patchSnapshot((current) => ({
@@ -952,6 +1033,7 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
         });
       }
       const semanticFrames = [...trajectoryRef.current.getSemanticFrames()];
+      replayFramesRef.current = semanticFrames;
       const rawFrames = [...trajectoryRef.current.getRawFrames()];
       const summary = trajectoryRef.current.summary();
       const actualDelegate = syncInferenceProvenance(client);
@@ -998,7 +1080,30 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
         processProgress: 100,
         metrics: { ...snapshot.metrics, processedFrames, totalFrames: processResult.sourceFrameCount, alignment: processResult.alignment, droppedFrames: summary.droppedFrames },
         export: { standardReady: true, diagnosticsReady: true, quality, fileName: built.standardFileName.replace(/\.zip$/, ''), sizeBytes: built.standardBlob.size, generatedAt: Date.now() },
+        replay: {
+          ready: true,
+          currentTime: 0,
+          duration: metadata.duration || semanticFrames.at(-1)?.time || 0,
+          currentFrame: semanticFrames[0]?.frame,
+          totalFrames: processResult.sourceFrameCount,
+          playing: false,
+          flags: replayFlags(semanticFrames[0]),
+        },
       });
+      replayRef.current = {
+        ready: true,
+        currentTime: 0,
+        duration: metadata.duration || semanticFrames.at(-1)?.time || 0,
+        currentFrame: semanticFrames[0]?.frame,
+        totalFrames: processResult.sourceFrameCount,
+        playing: false,
+        flags: replayFlags(semanticFrames[0]),
+      };
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = 0;
+      }
+      updateReplayAtTime(0);
       publishDiagnostics();
     } catch (error) {
       if (!isCurrentRun()) return;
@@ -1022,7 +1127,7 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     } finally {
       if (isCurrentRun()) processingAbortRef.current = null;
     }
-  }, [addDiagnostic, appendOutput, ensureInference, invalidateProcessing, patchSnapshot, processVideoFile, publishDiagnostics, snapshot.export, snapshot.metrics, snapshot.source]);
+  }, [addDiagnostic, appendOutput, ensureInference, invalidateProcessing, patchSnapshot, processVideoFile, publishDiagnostics, replayFlags, snapshot.export, snapshot.metrics, snapshot.source, updateReplayAtTime]);
 
   const cancelProcessing = useCallback(() => {
     invalidateProcessing();
@@ -1048,6 +1153,8 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     inferenceModeRef.current = undefined;
     diagnosticsRef.current.clear();
     trajectoryRef.current.clear();
+    replayFramesRef.current = [];
+    replayRef.current = { ready: false, currentTime: 0, duration: 0, playing: false };
     exportRef.current = null;
     modeRef.current = 'live';
     setSnapshot(initialSnapshot(snapshot.language));
@@ -1110,6 +1217,8 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     inferenceModeRef.current = undefined;
     revokeVideoUrl();
     trajectoryRef.current.clear();
+    replayFramesRef.current = [];
+    replayRef.current = { ready: false, currentTime: 0, duration: 0, playing: false };
     diagnosticsRef.current.clear();
     exportRef.current = null;
     patchSnapshot((current) => ({
@@ -1204,9 +1313,14 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     setPrivacyOpen,
     downloadStandard,
     downloadDiagnostics,
+    playReplay,
+    pauseReplay,
+    restartReplay,
+    seekReplay,
+    stepReplay,
   }), [cancelProcessing, checkCapabilities, clearSession, downloadDiagnostics, downloadStandard, importVideo, processSource, requestCamera, selectCamera, setLanguage, setMode, setPrivacyOpen, startPreview, startRecording, stopRecording, toggleMirror]);
 
-  return { snapshot, actions, videoStream, videoUrl, videoRef, updateVideoMetadata };
+  return { snapshot, actions, videoStream, videoUrl, videoRef, updateVideoMetadata, replay: snapshot.replay, replayActions, onReplayTime: updateReplayAtTime };
 }
 
 export default function App({ controller: externalController, initialLanguage }: AppProps) {
@@ -1306,7 +1420,7 @@ export default function App({ controller: externalController, initialLanguage }:
           </aside>
 
           <div className="center-stage">
-            <StageCanvas language={lang} source={snapshot.source} overlay={snapshot.overlay} phase={snapshot.phase} mirror={snapshot.source.mirrored} videoStream={controller.videoStream} videoUrl={controller.videoUrl} videoRef={videoRef} onVideoMetadata={handleVideoMetadata} onVideoError={() => actions.setPrivacyOpen(false)} />
+            <StageCanvas language={lang} source={snapshot.source} overlay={snapshot.overlay} phase={snapshot.phase} mirror={snapshot.source.mirrored} videoStream={controller.videoStream} videoUrl={controller.videoUrl} videoRef={videoRef} onVideoMetadata={handleVideoMetadata} onVideoError={() => actions.setPrivacyOpen(false)} replay={controller.replay ?? snapshot.replay} replayActions={{ playReplay: actions.playReplay ?? (() => undefined), pauseReplay: actions.pauseReplay ?? (() => undefined), restartReplay: actions.restartReplay ?? (() => undefined), seekReplay: actions.seekReplay ?? (() => undefined), stepReplay: actions.stepReplay ?? (() => undefined), ...controller.replayActions }} onReplayTime={controller.onReplayTime} />
             <div className="stage-legend" aria-label={lang === 'zh' ? '叠加层图例' : 'Overlay legend'}>
               <span><i className="legend-swatch swatch-palm" />{lang === 'zh' ? '掌心 / 方向' : 'Palm / orientation'}</span>
               <span><i className="legend-swatch swatch-h1" />{t(lang, 'hand1')}</span>

@@ -190,6 +190,7 @@ export interface CaptureUiController {
   videoRef?: import('react').RefObject<HTMLVideoElement>;
   replay?: ReplaySnapshot;
   replayActions?: Partial<ReplayActions>;
+  onReplayTime?: (time: number) => void;
 }
 
 export interface AppProps {
