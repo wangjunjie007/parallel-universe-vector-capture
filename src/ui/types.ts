@@ -175,6 +175,7 @@ export interface CaptureUiActions {
   setPrivacyOpen: (open: boolean) => void;
   downloadStandard: () => void | Promise<void>;
   downloadDiagnostics: () => void | Promise<void>;
+  downloadEffectVideo?: (effects: readonly string[]) => void | Promise<void>;
   playReplay?: () => void | Promise<void>;
   pauseReplay?: () => void;
   restartReplay?: () => void | Promise<void>;
@@ -191,6 +192,7 @@ export interface CaptureUiController {
   replay?: ReplaySnapshot;
   replayActions?: Partial<ReplayActions>;
   onReplayTime?: (time: number) => void;
+  effectVideoBusy?: boolean;
 }
 
 export interface AppProps {

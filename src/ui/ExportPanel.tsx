@@ -1,4 +1,4 @@
-import { Archive, Download, FileArchive, LockKeyhole } from 'lucide-react';
+import { Archive, Download, FileArchive, Film, LockKeyhole } from 'lucide-react';
 import type { ExportSnapshot, Language } from './types';
 import { formatBytes } from './format';
 import { t } from './i18n';
@@ -8,9 +8,12 @@ interface ExportPanelProps {
   exportState: ExportSnapshot;
   onStandard: () => void | Promise<void>;
   onDiagnostics: () => void | Promise<void>;
+  onEffectVideo?: () => void | Promise<void>;
+  effectVideoReady?: boolean;
+  effectVideoBusy?: boolean;
 }
 
-export function ExportPanel({ language, exportState, onStandard, onDiagnostics }: ExportPanelProps) {
+export function ExportPanel({ language, exportState, onStandard, onDiagnostics, onEffectVideo, effectVideoReady = false, effectVideoBusy = false }: ExportPanelProps) {
   const ready = exportState.quality === 'ready' || exportState.quality === 'needs_review';
   return (
     <section className="export-panel" aria-labelledby="export-title">
@@ -31,6 +34,11 @@ export function ExportPanel({ language, exportState, onStandard, onDiagnostics }
         <button type="button" className="export-button" onClick={onDiagnostics} disabled={!exportState.diagnosticsReady}>
           <FileArchive size={16} aria-hidden="true" />
           <span><strong>{t(language, 'diagnostics')}</strong><small>raw · quality · diagnostics</small></span>
+          <Download size={15} aria-hidden="true" />
+        </button>
+        <button type="button" className="export-button effect-video-button" onClick={onEffectVideo} disabled={!effectVideoReady || effectVideoBusy}>
+          {effectVideoBusy ? <Film className="spin" size={16} aria-hidden="true" /> : <Film size={16} aria-hidden="true" />}
+          <span><strong>{language === 'zh' ? '下载特效成品视频' : 'Download effect video'}</strong><small>{language === 'zh' ? 'WebM · 保留音频，移除帧点与连线' : 'WebM · audio kept, points and lines removed'}</small></span>
           <Download size={15} aria-hidden="true" />
         </button>
       </div>

@@ -51,6 +51,7 @@ import { inspectVideoFile, processVideoFile, revokeVideoUrl as revokeSourceVideo
 import { InferenceClient } from './runtime/inferenceClient';
 import type { InferenceInitResult } from './runtime/protocol';
 import { buildExport, downloadBlob as downloadExportBlob, type BuiltExport } from './runtime/exporter';
+import { renderEffectVideo } from './runtime/effectVideoExporter';
 import { DiagnosticsCollector } from './runtime/diagnostics';
 import { createTrajectoryStore, type TrajectoryStore } from './core/trajectoryStore';
 import { buildGeometryHints } from './core/geometryHintBuilder';
@@ -253,6 +254,7 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
   const [snapshot, setSnapshot] = useState<CaptureUiSnapshot>(() => initialSnapshot(initialLanguage ?? getInitialLanguage()));
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | undefined>();
+  const [effectVideoBusy, setEffectVideoBusy] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const cameraRef = useRef<CameraSession | null>(null);
   const inferenceRef = useRef<InferenceClient | null>(null);
@@ -1297,6 +1299,27 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     downloadExportBlob(built.diagnosticsBlob, built.diagnosticsFileName);
   }, []);
 
+  const downloadEffectVideo = useCallback(async (effects: readonly string[]) => {
+    const metadata = sourceMetadataRef.current;
+    const frames = replayFramesRef.current;
+    if (!metadata?.url || !frames.length || effectVideoBusy) return;
+    setEffectVideoBusy(true);
+    try {
+      const blob = await renderEffectVideo({
+        sourceUrl: metadata.url,
+        frames,
+        width: metadata.width,
+        height: metadata.height,
+        effects: effects as Parameters<typeof renderEffectVideo>[0]['effects'],
+      });
+      downloadExportBlob(blob, `parallel-universe-effect-video-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`);
+    } catch (error) {
+      patchSnapshot({ errorMessage: error instanceof Error ? error.message : 'Effect video export failed.' });
+    } finally {
+      setEffectVideoBusy(false);
+    }
+  }, [effectVideoBusy, patchSnapshot]);
+
   useEffect(() => {
     checkCapabilities();
     return () => {
@@ -1336,14 +1359,15 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     setPrivacyOpen,
     downloadStandard,
     downloadDiagnostics,
+    downloadEffectVideo,
     playReplay,
     pauseReplay,
     restartReplay,
     seekReplay,
     stepReplay,
-  }), [cancelProcessing, checkCapabilities, clearSession, downloadDiagnostics, downloadStandard, importVideo, processSource, requestCamera, selectCamera, setLanguage, setMode, setPrivacyOpen, startPreview, startRecording, stopRecording, toggleMirror]);
+  }), [cancelProcessing, checkCapabilities, clearSession, downloadDiagnostics, downloadEffectVideo, downloadStandard, importVideo, processSource, requestCamera, selectCamera, setLanguage, setMode, setPrivacyOpen, startPreview, startRecording, stopRecording, toggleMirror]);
 
-  return { snapshot, actions, videoStream, videoUrl, videoRef, updateVideoMetadata, replay: snapshot.replay, replayActions, onReplayTime: updateReplayAtTime };
+  return { snapshot, actions, videoStream, videoUrl, videoRef, updateVideoMetadata, replay: snapshot.replay, replayActions, onReplayTime: updateReplayAtTime, effectVideoBusy };
 }
 
 export default function App({ controller: externalController, initialLanguage }: AppProps) {
@@ -1461,7 +1485,7 @@ export default function App({ controller: externalController, initialLanguage }:
           <aside className="right-rail">
             <TelemetryPanel language={lang} metrics={snapshot.metrics} source={snapshot.source} mode={snapshot.mode} />
             <DiagnosticsPanel language={lang} diagnostics={snapshot.diagnostics} />
-            <ExportPanel language={lang} exportState={snapshot.export} onStandard={actions.downloadStandard} onDiagnostics={actions.downloadDiagnostics} />
+            <ExportPanel language={lang} exportState={snapshot.export} onStandard={actions.downloadStandard} onDiagnostics={actions.downloadDiagnostics} onEffectVideo={actions.downloadEffectVideo ? () => actions.downloadEffectVideo?.(visualConfig.effects) : undefined} effectVideoReady={snapshot.phase === 'complete' && snapshot.export.standardReady && Boolean(controller.videoUrl)} effectVideoBusy={controller.effectVideoBusy} />
           </aside>
         </div>
       </main>
