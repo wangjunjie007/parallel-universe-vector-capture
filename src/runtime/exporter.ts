@@ -333,6 +333,11 @@ export function downloadBlob(blob: Blob, fileName: string): void {
   const link = document.createElement('a');
   link.href = url;
   link.download = fileName;
+  // Some browsers (notably embedded/WebKit contexts) ignore click() on an
+  // unattached anchor. Mount it for the duration of the user-initiated click.
+  link.style.display = 'none';
+  document.body.appendChild(link);
   link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
