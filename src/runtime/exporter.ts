@@ -338,6 +338,6 @@ export function downloadBlob(blob: Blob, fileName: string): void {
   link.style.display = 'none';
   document.body.appendChild(link);
   link.click();
-  link.remove();
+  window.setTimeout(() => link.remove(), 0);
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
