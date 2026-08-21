@@ -1492,7 +1492,7 @@ export default function App({ controller: externalController, initialLanguage }:
           <aside className="right-rail">
             <TelemetryPanel language={lang} metrics={snapshot.metrics} source={snapshot.source} mode={snapshot.mode} />
             <DiagnosticsPanel language={lang} diagnostics={snapshot.diagnostics} />
-            <ExportPanel language={lang} exportState={snapshot.export} onStandard={actions.downloadStandard} onDiagnostics={actions.downloadDiagnostics} onJianying={actions.downloadJianying} jianyingReady={snapshot.phase === 'complete' && snapshot.export.standardReady && snapshot.metrics.alignment === 'exact_source_frames'} onEffectVideo={actions.downloadEffectVideo ? () => actions.downloadEffectVideo?.(visualConfig.effects) : undefined} effectVideoReady={snapshot.phase === 'complete' && snapshot.export.standardReady && Boolean(controller.videoUrl)} effectVideoBusy={controller.effectVideoBusy} />
+            <ExportPanel language={lang} exportState={snapshot.export} onStandard={actions.downloadStandard} onDiagnostics={actions.downloadDiagnostics} onJianying={actions.downloadJianying} jianyingReady={snapshot.phase === 'complete' && snapshot.export.standardReady} onEffectVideo={actions.downloadEffectVideo ? () => actions.downloadEffectVideo?.(visualConfig.effects) : undefined} effectVideoReady={snapshot.phase === 'complete' && snapshot.export.standardReady && Boolean(controller.videoUrl)} effectVideoBusy={controller.effectVideoBusy} />
           </aside>
         </div>
       </main>
