@@ -15,6 +15,7 @@ import type {
 } from '../core/types';
 import { DEFAULT_TRACKING_CONFIG, pointId } from '../core/types';
 import { summarizeGeometryHints } from '../core/exportTypes';
+import { buildJianyingExport, type JianyingExportResult } from './jianyingExporter';
 
 export interface ExportBuildOptions {
   appVersion: string;
@@ -53,6 +54,7 @@ export interface BuiltExport {
   diagnosticsBlob: Blob;
   standardFileName: string;
   diagnosticsFileName: string;
+  jianying?: JianyingExportResult;
 }
 
 const json = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
@@ -305,6 +307,16 @@ export function buildExport(
   };
   const standardBlob = new Blob([zipSync(standardEntries)], { type: 'application/zip' });
   const diagnosticsBlob = new Blob([zipSync(diagnosticEntries)], { type: 'application/zip' });
+  const jianying = options.alignment === 'exact_source_frames'
+    ? buildJianyingExport({
+      appVersion: options.appVersion,
+      source: options.source,
+      alignment: options.alignment,
+      frameCount,
+      frames: semanticFrames,
+      fingertipTracks: fingertip_tracks.tracks,
+    })
+    : undefined;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   return {
     bundle,
@@ -312,6 +324,7 @@ export function buildExport(
     diagnosticsBlob,
     standardFileName: `parallel-universe-vector-capture-${stamp}.zip`,
     diagnosticsFileName: `parallel-universe-vector-capture-${stamp}-diagnostics.zip`,
+    jianying,
   };
 }
 

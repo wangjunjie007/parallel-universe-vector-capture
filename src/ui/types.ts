@@ -175,6 +175,7 @@ export interface CaptureUiActions {
   setPrivacyOpen: (open: boolean) => void;
   downloadStandard: () => void | Promise<void>;
   downloadDiagnostics: () => void | Promise<void>;
+  downloadJianying?: () => void | Promise<void>;
   downloadEffectVideo?: (effects: readonly string[]) => void | Promise<void>;
   playReplay?: () => void | Promise<void>;
   pauseReplay?: () => void;

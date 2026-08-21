@@ -1299,6 +1299,12 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     downloadExportBlob(built.diagnosticsBlob, built.diagnosticsFileName);
   }, []);
 
+  const downloadJianying = useCallback(() => {
+    const built = exportRef.current;
+    if (!built?.jianying) return;
+    downloadExportBlob(built.jianying.blob, built.jianying.fileName);
+  }, []);
+
   const downloadEffectVideo = useCallback(async (effects: readonly string[]) => {
     const metadata = sourceMetadataRef.current;
     const frames = replayFramesRef.current;
@@ -1359,13 +1365,14 @@ export function useLocalCaptureController(initialLanguage?: Language): CaptureUi
     setPrivacyOpen,
     downloadStandard,
     downloadDiagnostics,
+    downloadJianying,
     downloadEffectVideo,
     playReplay,
     pauseReplay,
     restartReplay,
     seekReplay,
     stepReplay,
-  }), [cancelProcessing, checkCapabilities, clearSession, downloadDiagnostics, downloadEffectVideo, downloadStandard, importVideo, processSource, requestCamera, selectCamera, setLanguage, setMode, setPrivacyOpen, startPreview, startRecording, stopRecording, toggleMirror]);
+  }), [cancelProcessing, checkCapabilities, clearSession, downloadDiagnostics, downloadEffectVideo, downloadJianying, downloadStandard, importVideo, processSource, requestCamera, selectCamera, setLanguage, setMode, setPrivacyOpen, startPreview, startRecording, stopRecording, toggleMirror]);
 
   return { snapshot, actions, videoStream, videoUrl, videoRef, updateVideoMetadata, replay: snapshot.replay, replayActions, onReplayTime: updateReplayAtTime, effectVideoBusy };
 }
@@ -1485,7 +1492,7 @@ export default function App({ controller: externalController, initialLanguage }:
           <aside className="right-rail">
             <TelemetryPanel language={lang} metrics={snapshot.metrics} source={snapshot.source} mode={snapshot.mode} />
             <DiagnosticsPanel language={lang} diagnostics={snapshot.diagnostics} />
-            <ExportPanel language={lang} exportState={snapshot.export} onStandard={actions.downloadStandard} onDiagnostics={actions.downloadDiagnostics} onEffectVideo={actions.downloadEffectVideo ? () => actions.downloadEffectVideo?.(visualConfig.effects) : undefined} effectVideoReady={snapshot.phase === 'complete' && snapshot.export.standardReady && Boolean(controller.videoUrl)} effectVideoBusy={controller.effectVideoBusy} />
+            <ExportPanel language={lang} exportState={snapshot.export} onStandard={actions.downloadStandard} onDiagnostics={actions.downloadDiagnostics} onJianying={actions.downloadJianying} jianyingReady={snapshot.phase === 'complete' && snapshot.export.standardReady && snapshot.metrics.alignment === 'exact_source_frames'} onEffectVideo={actions.downloadEffectVideo ? () => actions.downloadEffectVideo?.(visualConfig.effects) : undefined} effectVideoReady={snapshot.phase === 'complete' && snapshot.export.standardReady && Boolean(controller.videoUrl)} effectVideoBusy={controller.effectVideoBusy} />
           </aside>
         </div>
       </main>
