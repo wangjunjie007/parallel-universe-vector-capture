@@ -15,7 +15,7 @@ function polygon(ctx: CanvasRenderingContext2D, corners: OverlayPosition[]): voi
 }
 
 /** Paints only the clipped portal faces. No points, labels, trails, or edges are drawn here. */
-export function drawRegionEffects(ctx: CanvasRenderingContext2D, corners: OverlayPosition[], effects: RegionEffect[], regionIndex: number, time: number, source?: CanvasImageSource, surfaceWidth?: number, surfaceHeight?: number): void {
+export function drawRegionEffects(ctx: CanvasRenderingContext2D, corners: OverlayPosition[], effects: RegionEffect[], regionIndex: number, time: number, source?: CanvasImageSource, surfaceWidth?: number, surfaceHeight?: number, mirror = false): void {
   if (corners.length !== 4 || effects.length === 0) return;
   const xs = corners.map((point) => point.x); const ys = corners.map((point) => point.y);
   const left = Math.min(...xs); const top = Math.min(...ys); const width = Math.max(1, Math.max(...xs) - left); const height = Math.max(1, Math.max(...ys) - top);
@@ -26,7 +26,13 @@ export function drawRegionEffects(ctx: CanvasRenderingContext2D, corners: Overla
   const drawSource = (filter: string, alpha: number, mode: GlobalCompositeOperation = 'source-over', dx = 0, dy = 0) => {
     if (!source || !surfaceWidth || !surfaceHeight) return;
     ctx.save(); ctx.globalCompositeOperation = mode; ctx.globalAlpha = alpha; ctx.filter = filter;
-    ctx.drawImage(source, dx, dy, surfaceWidth, surfaceHeight); ctx.restore();
+    if (mirror) {
+      ctx.translate(surfaceWidth, 0); ctx.scale(-1, 1);
+      ctx.drawImage(source, -dx, dy, surfaceWidth, surfaceHeight);
+    } else {
+      ctx.drawImage(source, dx, dy, surfaceWidth, surfaceHeight);
+    }
+    ctx.restore();
   };
   // These passes transform the actual video pixels inside the face. The low alpha keeps the
   // original action visible while the filter remains unmistakable.

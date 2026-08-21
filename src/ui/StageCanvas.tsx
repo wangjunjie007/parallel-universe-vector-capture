@@ -229,7 +229,7 @@ function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: Over
       const get = (id: string) => positions.get(id);
       const includeMultiPointCells = visualConfig.connections.some((style) => style !== 'portal');
       const regions = buildEffectRegions(positions, visualConfig.connections.includes('portal'), includeMultiPointCells);
-      regions.forEach((region, index) => drawStyledRegionEffects(ctx, region.corners, visualConfig.effects, index, overlay.sourceTime ?? 0, videoRef.current ?? undefined, width, height));
+      regions.forEach((region, index) => drawStyledRegionEffects(ctx, region.corners, visualConfig.effects, index, overlay.sourceTime ?? 0, videoRef.current ?? undefined, width, height, mirror));
       if (visualConfig.connections.includes('portal')) {
         const corners = ['hand_1:thumb', 'hand_1:index', 'hand_2:index', 'hand_2:thumb'].map(get).filter((p): p is { x: number; y: number } => Boolean(p));
         if (corners.length === 4) corners.forEach((point, index) => drawConnection(ctx, point, corners[(index + 1) % corners.length], 'portal'));
