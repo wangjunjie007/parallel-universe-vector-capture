@@ -66,9 +66,6 @@ function collectTracks(options: JianyingExportOptions): Record<string, FingerSam
 }
 
 export function buildJianyingExport(options: JianyingExportOptions): JianyingExportResult {
-  if (options.alignment !== 'exact_source_frames') {
-    throw new Error('剪映关键帧包仅支持精确源帧结果，请先完成精确处理。');
-  }
   const width = options.frames[0]?.width ?? options.source?.width ?? 0;
   const height = options.frames[0]?.height ?? options.source?.height ?? 0;
   const tracks = collectTracks(options);
@@ -124,12 +121,15 @@ export function buildJianyingExport(options: JianyingExportOptions): JianyingExp
       point.x_normalized, point.y_normalized, point.visible, point.interpolated, point.quality,
     ].map(csvCell).join(','));
   }
+  const alignmentNote = options.alignment === 'exact_source_frames'
+    ? '本包来自精确源帧处理。'
+    : '注意：本包来自演示时间估计结果，时间轴可能需要在剪映中校准；它没有被标记为精确源帧。';
   const readme = [
     '平行宇宙矢量帧捕捉 / 剪映关键帧包',
     '',
     '用途：将每根手指作为独立轨道，供剪映/CapCut 转换脚本或人工关键帧制作使用。',
     '坐标：source_pixels_top_left，另提供 x_normalized / y_normalized（0-1）。',
-    '本包只由精确源帧处理生成，不包含实时演示时间估计。',
+    alignmentNote,
     '',
     '重要：这不是未经验证的剪映原生草稿文件。剪映工程 JSON 随版本变化且没有公开稳定的通用导入契约。',
     '请使用 jianying-keyframes.json 或 jianying-keyframes.csv 进行转换或按帧建立动画。',

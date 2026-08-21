@@ -307,16 +307,14 @@ export function buildExport(
   };
   const standardBlob = new Blob([zipSync(standardEntries)], { type: 'application/zip' });
   const diagnosticsBlob = new Blob([zipSync(diagnosticEntries)], { type: 'application/zip' });
-  const jianying = options.alignment === 'exact_source_frames'
-    ? buildJianyingExport({
-      appVersion: options.appVersion,
-      source: options.source,
-      alignment: options.alignment,
-      frameCount,
-      frames: semanticFrames,
-      fingertipTracks: fingertip_tracks.tracks,
-    })
-    : undefined;
+  const jianying = buildJianyingExport({
+    appVersion: options.appVersion,
+    source: options.source,
+    alignment: options.alignment,
+    frameCount,
+    frames: semanticFrames,
+    fingertipTracks: fingertip_tracks.tracks,
+  });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   return {
     bundle,

@@ -31,7 +31,8 @@ describe('Jianying keyframe export', () => {
     expect(result.fileName).toMatch(/\.zip$/);
   });
 
-  it('rejects presentation-time estimates', () => {
-    expect(() => buildJianyingExport({ alignment: 'presentation_time_estimate', appVersion: '0.1.0', frames: [] })).toThrow('精确源帧');
+  it('keeps estimated alignment explicit instead of blocking the package', () => {
+    const result = buildJianyingExport({ alignment: 'presentation_time_estimate', appVersion: '0.1.0', frames: [] });
+    expect(result.bytes.length).toBeGreaterThan(0);
   });
 });
