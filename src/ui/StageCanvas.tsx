@@ -5,9 +5,10 @@ import type { CapturePhase, Language, OverlaySnapshot, ReplayActions, ReplaySnap
 import { formatNumber } from './format';
 import { t } from './i18n';
 import { buildEffectRegions, FINGER_ORDER, type OverlayPosition } from './overlayGeometry';
+import { drawRegionEffects as drawStyledRegionEffects } from './regionEffects';
 
 export type ConnectionStyle = 'portal' | 'fingers' | 'bridges' | 'mesh' | 'fine';
-export type RegionEffect = 'aurora' | 'prismatic' | 'invertCascade' | 'kaleido' | 'liquidChromatic' | 'energyBloom';
+export type RegionEffect = 'aurora' | 'prismatic' | 'invertCascade' | 'kaleido' | 'liquidChromatic' | 'energyBloom' | 'comicInk' | 'thermal' | 'posterInvert' | 'noirGraphic' | 'channelShift';
 export interface OverlayVisualConfig { connections: ConnectionStyle[]; effects: RegionEffect[] }
 
 interface StageCanvasProps {
@@ -202,7 +203,7 @@ const drawRegionEffects = (ctx: CanvasRenderingContext2D, corners: OverlayPositi
   ctx.restore();
 };
 
-function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: OverlaySnapshot, source: SourceSnapshot, mirror: boolean, visualConfig: OverlayVisualConfig) {
+function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: OverlaySnapshot, source: SourceSnapshot, mirror: boolean, visualConfig: OverlayVisualConfig, videoRef: RefObject<HTMLVideoElement>) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -228,7 +229,7 @@ function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: Over
       const get = (id: string) => positions.get(id);
       const includeMultiPointCells = visualConfig.connections.some((style) => style !== 'portal');
       const regions = buildEffectRegions(positions, visualConfig.connections.includes('portal'), includeMultiPointCells);
-      regions.forEach((region, index) => drawRegionEffects(ctx, region.corners, visualConfig.effects, index, overlay.sourceFrame ?? 0));
+      regions.forEach((region, index) => drawStyledRegionEffects(ctx, region.corners, visualConfig.effects, index, overlay.sourceTime ?? 0, videoRef.current ?? undefined, width, height));
       if (visualConfig.connections.includes('portal')) {
         const corners = ['hand_1:thumb', 'hand_1:index', 'hand_2:index', 'hand_2:thumb'].map(get).filter((p): p is { x: number; y: number } => Boolean(p));
         if (corners.length === 4) corners.forEach((point, index) => drawConnection(ctx, point, corners[(index + 1) % corners.length], 'portal'));
@@ -262,7 +263,7 @@ function useCanvasDrawing(canvasRef: RefObject<HTMLCanvasElement>, overlay: Over
     const observer = new ResizeObserver(draw);
     observer.observe(host);
     return () => observer.disconnect();
-  }, [canvasRef, mirror, overlay, source, visualConfig]);
+  }, [canvasRef, mirror, overlay, source, visualConfig, videoRef]);
 }
 
 export function StageCanvas({
@@ -284,7 +285,7 @@ export function StageCanvas({
 }: StageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [visualPanelOpen, setVisualPanelOpen] = useState(false);
-  useCanvasDrawing(canvasRef, overlay, source, mirror, visualConfig);
+  useCanvasDrawing(canvasRef, overlay, source, mirror, visualConfig, videoRef);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -363,7 +364,7 @@ export function StageCanvas({
           <div className="visual-controls-title">{language === 'zh' ? '连接线样式（可多选）' : 'Connection styles (multi-select)'}</div>
           <div className="visual-options">{([['portal', language === 'zh' ? '门户外框' : 'Portal frame'], ['fingers', language === 'zh' ? '手指链' : 'Finger chains'], ['bridges', language === 'zh' ? '同名桥接' : 'Matching bridges'], ['mesh', language === 'zh' ? '全连接网格' : 'Complete mesh'], ['fine', language === 'zh' ? '极简细线' : 'Minimal fine lines']] as [ConnectionStyle, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.connections.includes(value)} onChange={() => onVisualConfigChange('connections', value)} /><span>{label}</span></label>)}</div>
           <div className="visual-controls-title">{language === 'zh' ? '复杂矩形内部色变（可多选）' : 'Complex full-region color treatments (multi-select)'}</div>
-          <div className="visual-options">{([['aurora', language === 'zh' ? '极光色场' : 'Aurora field'], ['prismatic', language === 'zh' ? '棱镜流变' : 'Prismatic flow'], ['invertCascade', language === 'zh' ? '级联反转' : 'Inversion cascade'], ['kaleido', language === 'zh' ? '万花镜变换' : 'Kaleidoscope'], ['liquidChromatic', language === 'zh' ? '液态色差' : 'Liquid chromatic'], ['energyBloom', language === 'zh' ? '能量绽放' : 'Energy bloom']] as [RegionEffect, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.effects.includes(value)} onChange={() => onVisualConfigChange('effects', value)} /><span>{label}</span></label>)}</div>
+          <div className="visual-options">{([['aurora', language === 'zh' ? '极光色场' : 'Aurora field'], ['prismatic', language === 'zh' ? '棱镜流变' : 'Prismatic flow'], ['invertCascade', language === 'zh' ? '级联反转' : 'Inversion cascade'], ['comicInk', language === 'zh' ? '漫画墨线' : 'Comic ink'], ['thermal', language === 'zh' ? '热成像' : 'Thermal'], ['posterInvert', language === 'zh' ? '海报反转' : 'Poster invert'], ['noirGraphic', language === 'zh' ? '图形黑白' : 'Graphic noir'], ['channelShift', language === 'zh' ? 'RGB 分离' : 'RGB split'], ['kaleido', language === 'zh' ? '万花镜变换' : 'Kaleidoscope'], ['liquidChromatic', language === 'zh' ? '液态色差' : 'Liquid chromatic'], ['energyBloom', language === 'zh' ? '能量绽放' : 'Energy bloom']] as [RegionEffect, string][]).map(([value, label]) => <label key={value}><input type="checkbox" checked={visualConfig.effects.includes(value)} onChange={() => onVisualConfigChange('effects', value)} /><span>{label}</span></label>)}</div>
         </div> : null}
         <video
           className={`stage-video ${mirror ? 'is-mirrored' : ''}`}

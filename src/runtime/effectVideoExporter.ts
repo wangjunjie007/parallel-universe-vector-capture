@@ -1,5 +1,6 @@
 import type { SemanticFrame } from '../core/types';
-import { drawSemanticEffects, type RegionEffect } from '../ui/regionEffects';
+import { buildEffectRegions } from '../ui/overlayGeometry';
+import { drawRegionEffects, type RegionEffect } from '../ui/regionEffects';
 
 export interface EffectVideoExportOptions {
   sourceUrl: string;
@@ -49,7 +50,11 @@ export async function renderEffectVideo(options: EffectVideoExportOptions): Prom
     while (lastIndex + 1 < sorted.length && sorted[lastIndex + 1].time <= time) lastIndex += 1;
     const frame = sorted[lastIndex];
     ctx.clearRect(0, 0, options.width, options.height); ctx.drawImage(video, 0, 0, options.width, options.height);
-    if (frame) drawSemanticEffects(ctx, frame.extendedPoints, options.width, options.height, [...options.effects], time);
+  if (frame) {
+    const positions = new Map<string, { x: number; y: number }>();
+    frame.extendedPoints.forEach((point) => positions.set(`${point.side}:${point.finger}`, { x: point.x, y: point.y }));
+    buildEffectRegions(positions, true, frame.extendedPoints.length >= 8).forEach((region, index) => drawRegionEffects(ctx, region.corners, [...options.effects], index, time, video, options.width, options.height));
+  }
     options.onProgress?.(Math.min(100, Math.round((time / Math.max(0.001, video.duration)) * 100)));
   };
   const frameCallback = (video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, metadata: VideoFrameCallbackMetadata) => void) => number }).requestVideoFrameCallback;

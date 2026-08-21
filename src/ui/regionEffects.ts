@@ -1,6 +1,6 @@
 import { buildEffectRegions, type OverlayPosition } from './overlayGeometry';
 
-export type RegionEffect = 'aurora' | 'prismatic' | 'invertCascade' | 'kaleido' | 'liquidChromatic' | 'energyBloom';
+export type RegionEffect = 'aurora' | 'prismatic' | 'invertCascade' | 'kaleido' | 'liquidChromatic' | 'energyBloom' | 'comicInk' | 'thermal' | 'posterInvert' | 'noirGraphic' | 'channelShift';
 
 const palettes = [
   ['#46d9a0', '#c6a7ff', '#ff9d83'],
@@ -15,7 +15,7 @@ function polygon(ctx: CanvasRenderingContext2D, corners: OverlayPosition[]): voi
 }
 
 /** Paints only the clipped portal faces. No points, labels, trails, or edges are drawn here. */
-export function drawRegionEffects(ctx: CanvasRenderingContext2D, corners: OverlayPosition[], effects: RegionEffect[], regionIndex: number, time: number): void {
+export function drawRegionEffects(ctx: CanvasRenderingContext2D, corners: OverlayPosition[], effects: RegionEffect[], regionIndex: number, time: number, source?: CanvasImageSource, surfaceWidth?: number, surfaceHeight?: number): void {
   if (corners.length !== 4 || effects.length === 0) return;
   const xs = corners.map((point) => point.x); const ys = corners.map((point) => point.y);
   const left = Math.min(...xs); const top = Math.min(...ys); const width = Math.max(1, Math.max(...xs) - left); const height = Math.max(1, Math.max(...ys) - top);
@@ -23,6 +23,22 @@ export function drawRegionEffects(ctx: CanvasRenderingContext2D, corners: Overla
   const phase = time * 1.7 + regionIndex * 1.31;
   const veil = Math.min(0.34, 0.3 / Math.max(1, effects.length * 0.62));
   ctx.save(); polygon(ctx, corners); ctx.clip();
+  const drawSource = (filter: string, alpha: number, mode: GlobalCompositeOperation = 'source-over', dx = 0, dy = 0) => {
+    if (!source || !surfaceWidth || !surfaceHeight) return;
+    ctx.save(); ctx.globalCompositeOperation = mode; ctx.globalAlpha = alpha; ctx.filter = filter;
+    ctx.drawImage(source, dx, dy, surfaceWidth, surfaceHeight); ctx.restore();
+  };
+  // These passes transform the actual video pixels inside the face. The low alpha keeps the
+  // original action visible while the filter remains unmistakable.
+  if (effects.includes('comicInk')) drawSource('grayscale(1) contrast(2.1) saturate(0.2) brightness(1.12)', 0.88);
+  if (effects.includes('thermal')) drawSource('hue-rotate(275deg) saturate(5) contrast(1.65) brightness(1.18)', 0.82, 'screen');
+  if (effects.includes('posterInvert')) drawSource('invert(1) saturate(3.2) contrast(1.7)', 0.78, 'difference');
+  if (effects.includes('noirGraphic')) drawSource('grayscale(1) contrast(2.8) brightness(1.08)', 0.86);
+  if (effects.includes('channelShift')) {
+    const shift = Math.sin(phase) * Math.max(3, width * 0.035);
+    drawSource('saturate(3) contrast(1.35) hue-rotate(35deg)', 0.56, 'screen', shift, 0);
+    drawSource('saturate(3) contrast(1.35) hue-rotate(205deg)', 0.46, 'screen', -shift, 0);
+  }
   const field = ctx.createLinearGradient(left + Math.cos(phase) * width, top - height, left + width, top + Math.sin(phase) * height);
   field.addColorStop(0, palette[0]); field.addColorStop(0.38, palette[1]); field.addColorStop(0.72, palette[2]); field.addColorStop(1, '#071013');
   ctx.globalAlpha = veil; ctx.fillStyle = field; ctx.fillRect(left, top, width, height);
@@ -40,6 +56,15 @@ export function drawRegionEffects(ctx: CanvasRenderingContext2D, corners: Overla
   if (effects.includes('kaleido')) {
     ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = veil * 0.6; ctx.translate(left + width / 2, top + height / 2); ctx.rotate(Math.sin(phase) * 0.16);
     for (let index = 0; index < 6; index += 1) { ctx.rotate(Math.PI / 3); ctx.fillStyle = palette[index % 3]; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(width * 0.8, height * 0.1); ctx.lineTo(width * 0.25, height * 0.7); ctx.closePath(); ctx.fill(); }
+    ctx.restore();
+  }
+  if (effects.includes('comicInk')) {
+    // Sparse halftone dots reinforce the comic treatment without covering the source frame.
+    ctx.save(); ctx.globalAlpha = 0.26; ctx.fillStyle = '#111827';
+    const spacing = Math.max(7, Math.min(14, width * 0.055));
+    for (let y = top; y < top + height; y += spacing) for (let x = left; x < left + width; x += spacing) {
+      ctx.beginPath(); ctx.arc(x + Math.sin(phase + y) * 2, y, Math.max(0.7, spacing * 0.1), 0, Math.PI * 2); ctx.fill();
+    }
     ctx.restore();
   }
   ctx.restore();
